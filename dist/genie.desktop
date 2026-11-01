@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Génie
+Comment=Launch apps, find files, open workspaces, control Spotify
+Exec=genie toggle
+Icon=system-search
+NoDisplay=true
