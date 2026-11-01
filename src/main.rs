@@ -3,6 +3,7 @@
 //! `genie activate` and `genie quit` talk to it, starting it first if need be.
 
 mod activation;
+mod command_list;
 mod config;
 mod gpu;
 mod history;
@@ -12,8 +13,11 @@ mod launcher;
 mod matcher;
 mod plugin;
 mod plugins;
+mod windows;
 
 use activation::Activation;
+use command_list::CommandList;
+use command_list::Outcome;
 use gpu::Gpu;
 use gpu::Target;
 use launcher::Launcher;
@@ -26,6 +30,8 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
 use smithay_client_toolkit::shell::wlr_layer::Layer;
 use smithay_client_toolkit::shell::wlr_layer::LayerSurface;
+use smithay_client_toolkit::shell::xdg::window::Window;
+use smithay_client_toolkit::shell::xdg::window::WindowDecorations;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Write;
@@ -55,7 +61,7 @@ pub enum Event {
     Command(Command),
     Results { generation: u64, items: Vec<plugin::Item> },
     Finished { generation: u64 },
-    Icon { icon: plugin::Icon, image: Option<egui::ColorImage> },
+    Icon { window: icons::Window, icon: plugin::Icon, image: Option<egui::ColorImage> },
     /// Something wants drawing.
     Wake,
 }
@@ -174,9 +180,29 @@ struct Shown {
     first_frame: bool,
 }
 
+/// The command list's window, for as long as it's open. Fields drop in order:
+/// the swapchain before the surface, as in Shown.
+struct ListWindow {
+    target: Target,
+    window: Window,
+    renderer: egui_wgpu::Renderer,
+    ctx: egui::Context,
+    input: WaylandToEguiInput,
+    icons: icons::Icons,
+    list: CommandList,
+    size: (u32, u32),
+    scale: i32,
+    configured: bool,
+    focused: bool,
+}
+
 struct Daemon {
     app: Application,
     gpu: Gpu,
+    windows: windows::Windows,
+    renderer: egui_wgpu::Renderer,
+    list: Option<ListWindow>,
+    events: Sender<Event>,
     activation: Activation,
     ctx: egui::Context,
     input: WaylandToEguiInput,
@@ -214,6 +240,7 @@ fn daemon() {
     probe.destroy();
     log::info!("GPU ready in {:?}", started.elapsed());
     let activation = Activation::new(&app.conn);
+    let windows = windows::Windows::new(&app.conn);
     // SAFETY: the connection outlives the clipboard: both last as long as the
     // daemon.
     let clipboard = unsafe { Clipboard::new(app.conn.display().id().as_ptr() as *mut _) };
@@ -223,21 +250,20 @@ fn daemon() {
     let ctx = egui::Context::default();
     launcher::fonts(&ctx);
     let repaint_at = Arc::new(Mutex::new(None));
-    {
-        let (repaint_at, events) = (repaint_at.clone(), events.clone());
-        ctx.set_request_repaint_callback(move |info| {
-            *repaint_at.lock().unwrap() = Some(Instant::now() + info.delay);
-            let _ = events.send(Event::Wake);
-        });
-    }
+    connect_repaint(&ctx, &repaint_at, &events);
+    let renderer = gpu.renderer();
     let mut daemon = Daemon {
         app,
         gpu,
+        windows,
+        renderer,
+        list: None,
+        events: events.clone(),
         activation,
         ctx,
         input,
         launcher: Launcher::new(plugin::Runner::new(plugins, events.clone()), history::History::open()),
-        icons: icons::Icons::new(events.clone()),
+        icons: icons::Icons::new(events.clone(), icons::Window::Launcher),
         shown: None,
         scale: 1,
         hidden_on_focus_loss: None,
@@ -246,6 +272,16 @@ fn daemon() {
     };
     log::info!("ready");
     daemon.run(&incoming);
+}
+
+fn connect_repaint(ctx: &egui::Context, repaint_at: &Arc<Mutex<Option<Instant>>>, events: &Sender<Event>) {
+    let (repaint_at, events) = (repaint_at.clone(), events.clone());
+    ctx.set_request_repaint_callback(move |info| {
+        let at = Instant::now() + info.delay;
+        let mut scheduled = repaint_at.lock().unwrap();
+        *scheduled = Some(scheduled.map_or(at, |current: Instant| current.min(at)));
+        let _ = events.send(Event::Wake);
+    });
 }
 
 impl Daemon {
@@ -272,13 +308,14 @@ impl Daemon {
                 *self.repaint_at.lock().unwrap() = None;
                 self.dirty = false;
                 self.draw();
+                self.draw_list();
             }
         }
     }
 
     /// How long to sleep. Nothing's scheduled while hidden.
     fn next_repaint(&self) -> Option<Duration> {
-        if self.shown.is_none() {
+        if self.shown.is_none() && self.list.is_none() {
             return None;
         }
         let at = (*self.repaint_at.lock().unwrap())?;
@@ -319,9 +356,15 @@ impl Daemon {
                 self.launcher.finished(generation);
                 self.dirty = true;
             }
-            Event::Icon { icon, image } => {
+            Event::Icon { window: icons::Window::Launcher, icon, image } => {
                 self.icons.loaded(&self.ctx, icon, image);
                 self.dirty = true;
+            }
+            Event::Icon { window: icons::Window::CommandList, icon, image } => {
+                if let Some(list) = &mut self.list {
+                    list.icons.loaded(&list.ctx, icon, image);
+                    self.dirty = true;
+                }
             }
             Event::Wake => self.dirty = true,
         }
@@ -365,6 +408,13 @@ impl Daemon {
     }
 
     fn wayland(&mut self, event: WaylandEvent) {
+        let for_list = self.list.as_ref().is_some_and(|list| match event.get_wl_surface() {
+            Some(surface) => surface.id() == list.window.wl_surface().id(),
+            None => list.focused,
+        });
+        if for_list {
+            return self.list_event(event);
+        }
         let Some(shown) = &mut self.shown else { return };
         let surface = shown.layer.wl_surface().clone();
         if event.get_wl_surface().is_some_and(|s| s.id() != surface.id()) {
@@ -416,6 +466,108 @@ impl Daemon {
         }
     }
 
+    fn open_list(&mut self, token: Option<&str>) {
+        if let Some(list) = &self.list {
+            if let Some(token) = token {
+                self.activation.activate(token, list.window.wl_surface());
+            }
+            return;
+        }
+        let (width, height) = (640, 720);
+        let surface = self.app.compositor_state.create_surface(&self.app.qh);
+        let target = self.gpu.target(&self.app.conn, &surface);
+        let window = self.app.xdg_shell.create_window(surface, WindowDecorations::ServerDefault, &self.app.qh);
+        window.set_title("Génie commands");
+        window.set_app_id("genie");
+        window.set_min_size(Some((360, 300)));
+        window.commit();
+        let ctx = egui::Context::default();
+        launcher::fonts(&ctx);
+        connect_repaint(&ctx, &self.repaint_at, &self.events);
+        // SAFETY: the connection outlives the clipboard, as for the launcher's.
+        let clipboard = unsafe { Clipboard::new(self.app.conn.display().id().as_ptr() as *mut _) };
+        self.list = Some(ListWindow {
+            target,
+            window,
+            renderer: self.gpu.renderer(),
+            ctx,
+            input: WaylandToEguiInput::new(clipboard),
+            icons: icons::Icons::new(self.events.clone(), icons::Window::CommandList),
+            list: CommandList::new(self.launcher.runner.groups()),
+            size: (width, height),
+            scale: self.scale,
+            configured: false,
+            focused: false,
+        });
+        let _ = self.app.conn.flush();
+    }
+
+    fn list_event(&mut self, event: WaylandEvent) {
+        let Some(list) = &mut self.list else { return };
+        match event {
+            WaylandEvent::WindowConfigure(_, configure) => {
+                if let (Some(width), Some(height)) = configure.new_size {
+                    list.size = (width.get(), height.get());
+                }
+                list.configured = true;
+            }
+            WaylandEvent::WindowRequestClose(_) => {
+                self.list = None;
+                let _ = self.app.conn.flush();
+            }
+            WaylandEvent::ScaleFactorChanged(surface, scale) => {
+                surface.set_buffer_scale(scale);
+                list.scale = scale.max(1);
+            }
+            WaylandEvent::KeyboardEnter(..) => {
+                list.focused = true;
+                list.input.handle_keyboard_enter();
+            }
+            WaylandEvent::KeyboardLeave(_) => {
+                list.focused = false;
+                list.input.handle_keyboard_leave();
+            }
+            WaylandEvent::KeyPress(key) => list.input.handle_keyboard_event(&key, true, false),
+            WaylandEvent::KeyRelease(key) => list.input.handle_keyboard_event(&key, false, false),
+            WaylandEvent::KeyRepeat(key) => list.input.handle_keyboard_event(&key, true, true),
+            WaylandEvent::ModifiersChanged(modifiers) => list.input.update_modifiers(&modifiers),
+            WaylandEvent::PointerEvent((surface, position, kind)) => {
+                list.input.handle_pointer_event(&smithay_client_toolkit::seat::pointer::PointerEvent { surface, position, kind });
+            }
+            _ => return,
+        }
+        self.dirty = true;
+    }
+
+    fn draw_list(&mut self) {
+        let Some(list) = &mut self.list else { return };
+        if !list.configured {
+            return;
+        }
+        list.input.set_screen_size(list.size.0, list.size.1);
+        let raw = list.input.take_raw_input();
+        list.ctx.set_pixels_per_point(list.scale as f32);
+        let mut outcome = None;
+        let (commands, icons) = (&mut list.list, &mut list.icons);
+        let output = list.ctx.run_ui(raw, |ui| outcome = commands.draw(ui, icons));
+        for command in &output.platform_output.commands {
+            list.input.handle_output_command(command);
+        }
+        self.app.set_cursor(wayapp::egui_to_cursor_shape(output.platform_output.cursor_icon));
+        let scale = list.scale as u32;
+        let size = (list.size.0 * scale, list.size.1 * scale);
+        self.gpu.render(&mut list.renderer, &mut list.target, &list.ctx, output, size);
+        let _ = self.app.conn.flush();
+        match outcome {
+            Some(Outcome::Close) => {
+                self.list = None;
+                let _ = self.app.conn.flush();
+            }
+            Some(Outcome::Run(command)) => self.show(Some(command)),
+            None => {}
+        }
+    }
+
     fn draw(&mut self) {
         let Some(shown) = &self.shown else { return };
         if !shown.configured {
@@ -447,7 +599,7 @@ impl Daemon {
             }
         }
         let scale = self.scale as u32;
-        let presented = self.gpu.render(&mut shown.target, &self.ctx, output, (width * scale, height * scale));
+        let presented = self.gpu.render(&mut self.renderer, &mut shown.target, &self.ctx, output, (width * scale, height * scale));
         if presented && shown.first_frame {
             shown.first_frame = false;
             log::info!("first frame {:?} after the command", shown.show_requested.elapsed());
@@ -472,8 +624,14 @@ impl Daemon {
         log::debug!("running {} of {}, token: {}", action.id, item.id, token.is_some());
         match action.effect {
             Effect::Spawn { argv, cwd, id } => launch::spawn(&argv, cwd.as_deref(), &id, token.as_deref()),
+            Effect::Focus { names, argv, cwd, id } => {
+                if !self.windows.focus(&names) {
+                    launch::spawn(&argv, cwd.as_deref(), &id, token.as_deref());
+                }
+            }
             Effect::Open(target) => launch::open(&target, token.as_deref()),
             Effect::Copy(text) => self.app.clipboard.store(text),
+            Effect::OpenCommandList => self.open_list(token.as_deref()),
             Effect::Call(call) => {
                 std::thread::spawn(move || call());
             }

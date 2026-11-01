@@ -5,6 +5,7 @@ use crate::history::History;
 use crate::icons::Icons;
 use crate::plugin::Action;
 use crate::plugin::Item;
+use crate::plugin::LAST_TIER;
 use crate::plugin::Runner;
 use egui::Color32;
 use egui::CornerRadius;
@@ -36,15 +37,13 @@ const ICON_GAP: f32 = 6.0;
 const TITLE_FONT: f32 = 14.0 * 4.0 / 3.0;
 const SUBTITLE_FONT: f32 = 9.0 * 4.0 / 3.0;
 const ACTION_HEIGHT: f32 = 30.0;
-const HEADING_HEIGHT: f32 = 24.0;
-const HEADING_FONT: f32 = 12.0;
 
-const WINDOW: Color32 = Color32::from_rgb(0x20, 0x23, 0x26);
+pub const WINDOW: Color32 = Color32::from_rgb(0x20, 0x23, 0x26);
 const BORDER: Color32 = Color32::from_rgb(0x43, 0x48, 0x4d);
-const INPUT: Color32 = Color32::from_rgb(0x14, 0x16, 0x18);
-const SELECTION: Color32 = Color32::from_rgb(0x1f, 0x4e, 0x68);
-const TEXT: Color32 = Color32::from_rgb(0xfc, 0xfc, 0xfc);
-const SUBTEXT: Color32 = Color32::from_rgb(0xa1, 0xa9, 0xb1);
+pub const INPUT: Color32 = Color32::from_rgb(0x14, 0x16, 0x18);
+pub const SELECTION: Color32 = Color32::from_rgb(0x1f, 0x4e, 0x68);
+pub const TEXT: Color32 = Color32::from_rgb(0xfc, 0xfc, 0xfc);
+pub const SUBTEXT: Color32 = Color32::from_rgb(0xa1, 0xa9, 0xb1);
 
 pub fn surface_size() -> (u32, u32) {
     let rows = VISIBLE_ROWS as f32 * ROW_HEIGHT + (VISIBLE_ROWS - 1) as f32 * ROW_SPACING;
@@ -73,6 +72,10 @@ pub struct Launcher {
     stale: bool,
     scroll_to_selected: bool,
     cursor_to_end: bool,
+    /// Results held back until every plugin has finished.
+    held: Vec<Item>,
+    /// Enter came before the results: it runs as soon as they're in.
+    enter_waiting: bool,
     /// The selection was moved by hand, so results still arriving don't reset it.
     selection_moved: bool,
     /// Up in the input walks past queries. Where we are, if we're doing that.
@@ -94,6 +97,8 @@ impl Launcher {
             stale: false,
             scroll_to_selected: false,
             cursor_to_end: false,
+            held: Vec::new(),
+            enter_waiting: false,
             selection_moved: false,
             recall: None,
             runner,
@@ -122,6 +127,8 @@ impl Launcher {
         self.generation = started.generation;
         self.pending = started.pending;
         self.stale = true;
+        self.held.clear();
+        self.enter_waiting = false;
         self.selection_moved = false;
         if started.pending == 0 {
             self.items = started.items;
@@ -139,6 +146,15 @@ impl Launcher {
         for item in &mut items {
             item.score += self.history.boost(item.plugin, &item.id, &self.query);
         }
+        let (held, items): (Vec<Item>, Vec<Item>) = items.into_iter().partition(|item| item.tier >= LAST_TIER);
+        self.held.extend(held);
+        if items.is_empty() {
+            return;
+        }
+        self.publish(items);
+    }
+
+    fn publish(&mut self, items: Vec<Item>) {
         let selected = self.items.get(self.selected).filter(|_| self.selection_moved && !self.stale).map(|i| (i.plugin, i.id.clone()));
         if self.stale {
             self.items.clear();
@@ -156,10 +172,14 @@ impl Launcher {
             return;
         }
         self.pending = self.pending.saturating_sub(1);
-        if self.pending == 0 && self.stale {
-            self.items.clear();
-            self.selected = 0;
-            self.stale = false;
+        if self.pending == 0 {
+            let held = std::mem::take(&mut self.held);
+            if self.stale {
+                self.items.clear();
+                self.selected = 0;
+                self.stale = false;
+            }
+            self.publish(held);
         }
     }
 
@@ -199,10 +219,6 @@ impl Launcher {
     }
 
     fn activate(&mut self, action: usize, requests: &mut Vec<Request>) {
-        // Still showing the previous query's results: not what was typed.
-        if self.stale {
-            return;
-        }
         let Some(item) = self.items.get(self.selected) else { return };
         if let Some(run) = item.actions.get(action) {
             requests.push(Request::Run(run.clone(), item.clone()));
@@ -236,6 +252,14 @@ impl Launcher {
             self.activate(action, requests);
         }
         if pressed(Modifiers::NONE, Key::Enter) {
+            // Still showing the previous query's results: not what was typed.
+            self.enter_waiting = self.stale;
+            if !self.stale {
+                self.activate(0, requests);
+            }
+        }
+        if self.enter_waiting && !self.stale {
+            self.enter_waiting = false;
             self.activate(0, requests);
         }
         if pressed(Modifiers::NONE, Key::ArrowDown) {
@@ -335,13 +359,6 @@ impl Launcher {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(0.0, ROW_SPACING);
                 for (index, item) in self.items.iter().enumerate() {
-                    if let Some(group) = &item.group
-                        && (index == 0 || self.items[index - 1].group.as_ref() != Some(group))
-                    {
-                        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), HEADING_HEIGHT), Sense::hover());
-                        let text = galley(ui, group, HEADING_FONT, SUBTEXT, rect.width());
-                        ui.painter().galley(egui::pos2(rect.left() + ROW_PADDING, rect.bottom() - text.size().y - 2.0), text, SUBTEXT);
-                    }
                     let selected = index == self.selected;
                     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
                     if !ui.is_rect_visible(rect) {
@@ -412,7 +429,7 @@ fn sort(items: &mut [Item]) {
 }
 
 /// One line, cut with an ellipsis when too long.
-fn galley(ui: &egui::Ui, text: &str, size: f32, color: Color32, width: f32) -> std::sync::Arc<egui::Galley> {
+pub fn galley(ui: &egui::Ui, text: &str, size: f32, color: Color32, width: f32) -> std::sync::Arc<egui::Galley> {
     let mut job = LayoutJob::simple_singleline(text.to_string(), FontId::proportional(size), color);
     job.wrap = TextWrapping::truncate_at_width(width);
     ui.painter().layout_job(job)
@@ -428,4 +445,79 @@ pub fn fonts(ctx: &egui::Context) {
     fonts.font_data.insert("system".into(), egui::FontData::from_owned(bytes).into());
     fonts.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "system".into());
     ctx.set_fonts(fonts);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::Plugin;
+    use crate::plugin::Query;
+    use std::sync::Arc;
+
+    struct Regular;
+
+    impl Plugin for Regular {
+        fn id(&self) -> &'static str {
+            "regular"
+        }
+        fn regular(&self) -> bool {
+            true
+        }
+        fn query(&self, _: &Query) {}
+    }
+
+    fn launcher() -> Launcher {
+        // Two plugins, so `pending` is 2. Nobody reads the events.
+        let (events, _) = std::sync::mpsc::channel();
+        let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(Regular), Arc::new(Regular)];
+        Launcher::new(Runner::new(plugins, events), History::in_memory())
+    }
+
+    fn item(id: &str, tier: u8) -> Item {
+        let mut item = Item::new(id, id, "", crate::plugin::Icon::Theme("x".into())).tier(tier);
+        item.plugin = "regular";
+        item
+    }
+
+    fn ids(launcher: &Launcher) -> Vec<&str> {
+        launcher.items.iter().map(|i| i.id.as_str()).collect()
+    }
+
+    #[test]
+    fn google_waits_for_the_others() {
+        let mut launcher = launcher();
+        launcher.set_input("projects".into());
+        let generation = launcher.generation;
+        launcher.results(generation, vec![item("google", LAST_TIER)]);
+        assert!(launcher.items.is_empty() && launcher.stale, "Google alone isn't shown");
+        launcher.finished(generation);
+        assert!(launcher.stale, "one plugin hasn't finished");
+        launcher.results(generation, vec![item("folder", 1)]);
+        assert_eq!(ids(&launcher), ["folder"]);
+        launcher.finished(generation);
+        assert_eq!(ids(&launcher), ["folder", "google"]);
+        assert_eq!(launcher.selected, 0);
+    }
+
+    #[test]
+    fn google_alone_appears_once_everyone_has_finished() {
+        let mut launcher = launcher();
+        launcher.set_input("zzz".into());
+        let generation = launcher.generation;
+        launcher.results(generation, vec![item("google", LAST_TIER)]);
+        launcher.finished(generation);
+        launcher.finished(generation);
+        assert_eq!(ids(&launcher), ["google"]);
+        assert!(!launcher.stale);
+    }
+
+    #[test]
+    fn old_results_are_dropped() {
+        let mut launcher = launcher();
+        launcher.set_input("a".into());
+        let old = launcher.generation;
+        launcher.set_input("ab".into());
+        launcher.results(old, vec![item("old", 0)]);
+        assert!(launcher.items.is_empty());
+    }
 }

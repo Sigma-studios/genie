@@ -15,7 +15,6 @@ use wayland_client::Proxy;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 pub struct Gpu {
-    renderer: Renderer,
     device: wgpu::Device,
     queue: wgpu::Queue,
     instance: wgpu::Instance,
@@ -88,10 +87,14 @@ impl Gpu {
             log::warn!("no premultiplied alpha: the shadow won't look right");
             capabilities.alpha_modes[0]
         };
-        let renderer = Renderer::new(&device, format, RendererOptions { msaa_samples: 1, ..Default::default() });
         log::info!("drawing with {:?} on {}, {format:?}", adapter.get_info().backend, adapter.get_info().name);
         drop(surface);
-        Self { renderer, device, queue, instance, format, present_mode, alpha_mode }
+        Self { device, queue, instance, format, present_mode, alpha_mode }
+    }
+
+    /// One per egui context: it holds that context's textures.
+    pub fn renderer(&self) -> Renderer {
+        Renderer::new(&self.device, self.format, RendererOptions { msaa_samples: 1, ..Default::default() })
     }
 
     pub fn target(&self, conn: &Connection, wl_surface: &WlSurface) -> Target {
@@ -132,12 +135,12 @@ impl Gpu {
     }
 
     /// Draws a frame, which also commits the wl_surface. Size in pixels.
-    pub fn render(&mut self, target: &mut Target, ctx: &egui::Context, output: egui::FullOutput, size: (u32, u32)) -> bool {
+    pub fn render(&self, renderer: &mut Renderer, target: &mut Target, ctx: &egui::Context, output: egui::FullOutput, size: (u32, u32)) -> bool {
         let screen = ScreenDescriptor { size_in_pixels: [size.0, size.1], pixels_per_point: output.pixels_per_point };
         // Textures must reach the renderer even if this frame doesn't.
         for (id, deltas) in &output.textures_delta.set {
             for delta in deltas {
-                self.renderer.update_texture(&self.device, &self.queue, *id, delta);
+                renderer.update_texture(&self.device, &self.queue, *id, delta);
             }
         }
         if target.size != size {
@@ -149,7 +152,7 @@ impl Gpu {
             let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
             let triangles = ctx.tessellate(output.shapes, output.pixels_per_point);
             let mut encoder = self.device.create_command_encoder(&Default::default());
-            self.renderer.update_buffers(&self.device, &self.queue, &mut encoder, &triangles, &screen);
+            renderer.update_buffers(&self.device, &self.queue, &mut encoder, &triangles, &screen);
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("genie"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -163,13 +166,13 @@ impl Gpu {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.renderer.render(&mut pass.forget_lifetime(), &triangles, &screen);
+            renderer.render(&mut pass.forget_lifetime(), &triangles, &screen);
             self.queue.submit(Some(encoder.finish()));
             self.queue.present(texture);
             presented = true;
         }
         for id in &output.textures_delta.free {
-            self.renderer.free_texture(id);
+            renderer.free_texture(id);
         }
         presented
     }

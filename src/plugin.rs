@@ -24,9 +24,13 @@ pub enum Icon {
 pub enum Effect {
     /// Start a program, in its own scope. `id` names that scope.
     Spawn { argv: Vec<String>, cwd: Option<PathBuf>, id: String },
+    /// An app: its window if it has one under these names, or else it starts.
+    Focus { names: Vec<String>, argv: Vec<String>, cwd: Option<PathBuf>, id: String },
     /// A file, folder or URL, in whatever handles it.
     Open(String),
     Copy(String),
+    /// The window listing every command.
+    OpenCommandList,
     /// Anything else. Runs off the UI thread.
     Call(Arc<dyn Fn() + Send + Sync>),
 }
@@ -61,8 +65,6 @@ pub struct Item {
     /// Results sort by this first, lowest on top, then by score: it's what keeps
     /// apps above files above Google, however often something was used.
     pub tier: u8,
-    /// A heading above this item when it differs from the previous item's.
-    pub group: Option<String>,
 }
 
 impl Item {
@@ -77,7 +79,6 @@ impl Item {
             completion: None,
             score: 0.0,
             tier: 0,
-            group: None,
         }
     }
 
@@ -157,7 +158,7 @@ impl Command {
 pub trait Plugin: Send + Sync {
     fn id(&self) -> &'static str;
 
-    /// What its commands are listed under in `/list`.
+    /// What its commands are listed under in the command list.
     fn group(&self) -> &'static str {
         "Other"
     }
@@ -179,6 +180,10 @@ pub trait Plugin: Send + Sync {
 
 /// What was started for a query. `items` are there right away: the list of
 /// commands needs no plugin.
+/// Items of this tier wait for every plugin to finish: Google answers at
+/// once and files take a moment, and it shouldn't be selected in between.
+pub const LAST_TIER: u8 = 2;
+
 pub struct Started {
     pub generation: u64,
     pub pending: usize,
@@ -244,10 +249,15 @@ impl Runner {
             Parsed::List(typed) => {
                 let list = list_command();
                 items = list_commands(all.iter().map(|(_, c)| c).chain([&list]), typed);
+                for item in items.iter_mut().filter(|item| item.title == format!("/{LIST}")) {
+                    open_list(item);
+                }
                 Vec::new()
             }
-            Parsed::Run(LIST, arguments) => {
-                items = list_grouped(&self.plugins, arguments);
+            Parsed::Run(LIST, _) => {
+                let list = list_command();
+                items = list_commands(std::iter::once(&list), "");
+                items.iter_mut().for_each(open_list);
                 Vec::new()
             }
             Parsed::Run(name, arguments) => all
@@ -278,6 +288,20 @@ impl Runner {
         Started { generation: self.generation, pending, items }
     }
 
+    /// Every plugin's commands, under its group, for the command list.
+    pub fn groups(&self) -> Vec<(String, Vec<Command>)> {
+        let mut groups: Vec<(String, Vec<Command>)> = Vec::new();
+        for plugin in &self.plugins {
+            let mut commands = plugin.commands();
+            if commands.is_empty() {
+                continue;
+            }
+            commands.sort_by(|a, b| a.name.cmp(&b.name));
+            groups.push((plugin.group().to_string(), commands));
+        }
+        groups
+    }
+
     fn commands(&self) -> Vec<(Arc<dyn Plugin>, Command)> {
         self.plugins.iter().flat_map(|p| p.commands().into_iter().map(|c| (p.clone(), c)).collect::<Vec<_>>()).collect()
     }
@@ -286,21 +310,12 @@ impl Runner {
 const LIST: &str = "list";
 
 fn list_command() -> Command {
-    Command::new(LIST, &[], "Every command, by group, with a search", "view-list-details")
+    Command::new(LIST, &[], "Open a window with every command, by group", "view-list-details")
 }
 
-/// `/list`: the input is its search bar. The groups keep the plugins' order.
-fn list_grouped(plugins: &[Arc<dyn Plugin>], typed: &str) -> Vec<Item> {
-    let mut items = Vec::new();
-    for (tier, plugin) in plugins.iter().enumerate() {
-        let commands = plugin.commands();
-        for mut item in list_commands(commands.iter(), typed) {
-            item.tier = tier as u8;
-            item.group = Some(plugin.group().to_string());
-            items.push(item);
-        }
-    }
-    items
+fn open_list(item: &mut Item) {
+    item.completion = None;
+    item.actions = vec![Action::new("open", "Open", Effect::OpenCommandList)];
 }
 
 /// By name, and by what they do, so `/music` finds Spotify. All of them,
@@ -370,34 +385,5 @@ mod tests {
         assert_eq!(titles("music"), ["/spotify"]);
         assert!(titles("zzz").is_empty());
         assert_eq!(list_commands(commands.iter(), "ma")[0].completion.as_deref(), Some("/maps "));
-    }
-
-    struct Fake(&'static str, Vec<Command>);
-
-    impl Plugin for Fake {
-        fn id(&self) -> &'static str {
-            self.0
-        }
-        fn group(&self) -> &'static str {
-            self.0
-        }
-        fn commands(&self) -> Vec<Command> {
-            self.1.clone()
-        }
-        fn query(&self, _: &Query) {}
-    }
-
-    #[test]
-    fn the_list_is_grouped_and_searchable() {
-        let plugins: Vec<Arc<dyn Plugin>> = vec![
-            Arc::new(Fake("Spotify", vec![Command::new("queue", &[], "Add a song", "a"), Command::new("next", &[], "Skip", "b")])),
-            Arc::new(Fake("Web", vec![Command::new("maps", &[], "Search Maps", "c")])),
-        ];
-        let all = list_grouped(&plugins, "");
-        assert_eq!(all.iter().map(|i| i.group.as_deref().unwrap()).collect::<Vec<_>>(), ["Spotify", "Spotify", "Web"]);
-        assert!(all[0].tier < all[2].tier);
-        let found = list_grouped(&plugins, "song");
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].title, "/queue");
     }
 }

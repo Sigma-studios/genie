@@ -1,5 +1,6 @@
 //! Desktop entries. Read at startup and again whenever the launcher shows, so
-//! a rebuild's new apps are there without restarting.
+//! a rebuild's new apps are there without restarting. Enter brings an app's
+//! window forward if it has one, and Alt offers a new window.
 
 use crate::config;
 use crate::launch;
@@ -26,6 +27,8 @@ struct App {
     comment: String,
     keywords: Vec<String>,
     icon: Option<String>,
+    /// What its windows call themselves, when the entry says.
+    wm_class: Option<String>,
     argv: Vec<String>,
     cwd: Option<PathBuf>,
     /// Name and command of the entry's extra actions.
@@ -75,7 +78,13 @@ impl Plugin for Apps {
             });
             let spawn = |argv: &Vec<String>| Effect::Spawn { argv: argv.clone(), cwd: app.cwd.clone(), id: app.id.clone() };
             let mut item = Item::new(&app.id, title, subtitle, icon)
-                .action(Action::new("launch", "Launch", spawn(&app.argv)))
+                .action(Action::new("launch", "Open", Effect::Focus {
+                    names: app.window_names(),
+                    argv: app.argv.clone(),
+                    cwd: app.cwd.clone(),
+                    id: app.id.clone(),
+                }))
+                .action(Action::new("new", "New window", spawn(&app.argv)))
                 .completion(title.clone())
                 .score(score);
             for (name, argv) in &app.actions {
@@ -84,6 +93,20 @@ impl Plugin for Apps {
             Some(item)
         });
         query.send(items.collect());
+    }
+}
+
+impl App {
+    /// What a window of this app can be called. The program's name only counts
+    /// when it runs without arguments: a Steam game's entry runs `steam` with
+    /// the game, and shouldn't just bring Steam forward.
+    fn window_names(&self) -> Vec<String> {
+        let mut names = vec![self.id.clone()];
+        names.extend(self.wm_class.clone());
+        if let [program] = self.argv.as_slice() {
+            names.extend(program.rsplit('/').next().map(String::from));
+        }
+        names
     }
 }
 
@@ -176,6 +199,7 @@ fn parse(id: &str, text: &str, locale: &str, desktops: &[&str], terminal: &[Stri
         cwd: main.get("Path").filter(|p| !p.is_empty()).map(PathBuf::from),
         name,
         icon,
+        wm_class: main.get("StartupWMClass").filter(|c| !c.is_empty()).cloned(),
         argv,
         actions,
     })
@@ -346,6 +370,14 @@ mod tests {
         assert_eq!(app.keywords, ["epic", "epic games"]);
         assert_eq!(app.argv, ["files"]);
         assert_eq!(app.actions, [("Nouveau".to_string(), vec!["files".to_string(), "--new".to_string()])]);
+    }
+
+    #[test]
+    fn windows_are_known_by_id_class_and_lone_program() {
+        let names = |text: &str| entry(&format!("[Desktop Entry]\nType=Application\nName=A\n{text}\n")).unwrap().window_names();
+        assert_eq!(names("Exec=/nix/bin/valet %U\nStartupWMClass=crx_x"), ["app", "crx_x", "valet"]);
+        // A game launched through Steam mustn't count as Steam's window.
+        assert_eq!(names("Exec=steam steam://rungameid/1"), ["app"]);
     }
 
     #[test]

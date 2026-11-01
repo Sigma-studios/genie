@@ -7,15 +7,13 @@ use crate::plugin::Command;
 use crate::plugin::Effect;
 use crate::plugin::Icon;
 use crate::plugin::Item;
+use crate::plugin::LAST_TIER;
 use crate::plugin::Plugin;
 use crate::plugin::Query;
 use percent_encoding::NON_ALPHANUMERIC;
 use percent_encoding::utf8_percent_encode;
 
 const ICON: &str = "internet-web-browser";
-/// Below apps and files.
-const TIER: u8 = 2;
-
 pub struct WebSearch(pub Vec<Engine>);
 
 fn url(engine: &Engine, text: &str) -> String {
@@ -59,7 +57,7 @@ impl Plugin for WebSearch {
         let text = query.text.trim();
         let Some(command) = &query.command else {
             if !text.is_empty() {
-                query.send(self.0.iter().filter(|e| e.regular).map(|e| search(e, text).tier(TIER)).collect());
+                query.send(self.0.iter().filter(|e| e.regular).map(|e| search(e, text).tier(LAST_TIER)).collect());
             }
             return;
         };

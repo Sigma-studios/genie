@@ -45,6 +45,13 @@ impl History {
         Self::from_connection(db)
     }
 
+    #[cfg(test)]
+    pub fn in_memory() -> Self {
+        let db = Connection::open_in_memory().unwrap();
+        prepare(&db, Path::new("/does/not/exist")).unwrap();
+        Self::from_connection(Some(db))
+    }
+
     fn from_connection(db: Option<Connection>) -> Self {
         let mut history = Self { db, uses: HashMap::new(), queries: Vec::new(), now: unix_now() };
         let rows = history.db.as_ref().and_then(|db| load(db).ok()).unwrap_or_default();

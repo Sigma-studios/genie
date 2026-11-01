@@ -69,6 +69,15 @@ impl Activation {
     }
 }
 
+impl Activation {
+    /// Brings a window of ours to the front.
+    pub fn activate(&self, token: &str, surface: &WlSurface) {
+        if let Some(manager) = &self.state.manager {
+            manager.activate(token.to_string(), surface);
+        }
+    }
+}
+
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
     fn event(
         state: &mut Self,

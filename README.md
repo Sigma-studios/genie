@@ -3,7 +3,8 @@
 A fast application launcher for Wayland, in Rust. It stays resident, opens in a
 few milliseconds, and draws with egui on a layer surface.
 
-Type to search apps, then files, then Google, in that order. Everything else is a command:
+Type to search apps, then files, then Google, in that order. `folder/name` and `~/path` list
+what's in there, and Tab goes one level down. Everything else is a command:
 `/` lists them, and the list narrows as you type.
 
 | Command | What it does |
@@ -13,12 +14,13 @@ Type to search apps, then files, then Google, in that order. Everything else is 
 | `/spotify` (`/sp`, `/play`), `/spotify name` | Spotify's controls, and search |
 | `/queue name` | Search songs, and queue one, or play it if nothing is playing |
 | `/pause`, `/next`, `/previous` | Control the player |
-| `/list` | Every command, by group, and the input searches them |
+| `/list` | Opens a window with every command, by group, and a search bar |
 | `/power` | Shut down, restart, log out, lock |
 | `/maps`, `/youtube` (`/yt`), `/github` (`/gh`), `/gpt`, `/google` (`/gg`)… | Web searches |
 
-Enter runs the selected result, Alt lists its other actions (Alt+Up/Down, Alt+Enter),
-and Tab completes. Up on the first result walks back through past queries. Escape or
+Enter runs the selected result, and an app that's open comes forward rather than starting
+again. Alt lists the other actions, New window among them (Alt+Up/Down, Alt+Enter), and Tab
+completes. Up on the first result walks back through past queries. Escape or
 clicking elsewhere hides.
 
 ## Running

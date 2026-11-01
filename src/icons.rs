@@ -25,13 +25,20 @@ enum Slot {
     Ready(TextureHandle),
 }
 
+/// Textures belong to one egui context, so each window has its own Icons.
+#[derive(Clone, Copy)]
+pub enum Window {
+    Launcher,
+    CommandList,
+}
+
 pub struct Icons {
     slots: HashMap<Icon, Slot>,
     requests: Sender<Icon>,
 }
 
 impl Icons {
-    pub fn new(events: Sender<Event>) -> Self {
+    pub fn new(events: Sender<Event>, window: Window) -> Self {
         let (requests, incoming) = mpsc::channel::<Icon>();
         let sender = events;
         std::thread::spawn(move || {
@@ -42,7 +49,7 @@ impl Icons {
                     let (url, sender, icon) = (url.clone(), sender.clone(), icon.clone());
                     std::thread::spawn(move || {
                         let image = fetch_url(&url).and_then(|path| load_file(&path));
-                        let _ = sender.send(Event::Icon { icon, image });
+                        let _ = sender.send(Event::Icon { window, icon, image });
                     });
                     continue;
                 }
@@ -51,7 +58,7 @@ impl Icons {
                     Icon::File(path) => load_file(path),
                     Icon::Url(_) => None,
                 };
-                let _ = sender.send(Event::Icon { icon, image });
+                let _ = sender.send(Event::Icon { window, icon, image });
             }
         });
         Self { slots: HashMap::new(), requests }

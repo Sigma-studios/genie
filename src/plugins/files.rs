@@ -8,8 +8,9 @@
 //! / or ~ is a real path and is listed from the filesystem. Tab on a folder
 //! completes it with a slash, to go one level down.
 //!
-//! A plain name of three letters or more also lists a few files in the regular
-//! search, after apps.
+//! The regular search also lists files, after apps: a few for a plain name of
+//! three letters or more, and all of them for a path, which is plainly what's
+//! wanted. Tab there stays in the regular search.
 
 use crate::config;
 use crate::plugin::Action;
@@ -274,6 +275,12 @@ fn list_real(query: &str) -> Vec<Hit> {
     hits
 }
 
+/// `folder/name` or `~/path`. A leading slash is a command, so `/files /etc` is
+/// how to reach those.
+fn is_path(text: &str) -> bool {
+    text.contains('/') || text.starts_with('~')
+}
+
 fn human(bytes: u64) -> String {
     let mut n = bytes as f64;
     for unit in ["B", "KiB", "MiB", "GiB"] {
@@ -296,7 +303,8 @@ fn file_icon(path: &str, kind: &str) -> Icon {
     Icon::Theme(name)
 }
 
-fn make_item(hit: Hit, typed: &str, position: usize) -> Item {
+/// `command` is what Tab keeps in front of the path, like `/files `.
+fn make_item(hit: Hit, command: &str, typed: &str, position: usize) -> Item {
     let dir = hit.kind == "dir";
     let name = base_name(&hit.path).to_string();
     let parent = Path::new(&hit.path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
@@ -309,7 +317,7 @@ fn make_item(hit: Hit, typed: &str, position: usize) -> Item {
     }
     // Keeps the daemon's order among results of the same rank.
     item.action(Action::new("copy", "Copy the path", Effect::Copy(hit.path)))
-        .completion(format!("/files {typed}{name}{slash}"))
+        .completion(format!("{command}{typed}{name}{slash}"))
         .score(hit.rank.score() - position as f32 * 0.001)
 }
 
@@ -332,14 +340,15 @@ impl Plugin for Files {
 
     fn query(&self, query: &Query) {
         let text = query.text.trim();
-        if query.command.is_none() {
-            if text.chars().count() < REGULAR_MINIMUM || text.contains('/') || text.starts_with('~') {
+        let regular = query.command.is_none();
+        if regular && !is_path(text) {
+            if text.chars().count() < REGULAR_MINIMUM {
                 return;
             }
             // Nothing to say if the daemon's down: this wasn't asked for.
             if let Ok(hits) = search(text) {
                 let items = hits.into_iter().take(REGULAR_LIMIT).enumerate();
-                query.send(items.map(|(i, h)| make_item(h, "", i).tier(TIER)).collect());
+                query.send(items.map(|(i, h)| make_item(h, "", "", i).tier(TIER)).collect());
             }
             return;
         }
@@ -354,7 +363,9 @@ impl Plugin for Files {
             return;
         };
         match hits {
-            Ok(hits) => query.send(hits.into_iter().enumerate().map(|(i, h)| make_item(h, &typed, i)).collect()),
+            Ok(hits) if regular => query.send(hits.into_iter().enumerate().map(|(i, h)| make_item(h, "", &typed, i).tier(TIER)).collect()),
+            Ok(hits) => query.send(hits.into_iter().enumerate().map(|(i, h)| make_item(h, "/files ", &typed, i)).collect()),
+            Err(_) if regular => {}
             Err(error) => {
                 query.send(vec![Item::new("files.error", "Répertoire", error, Icon::Theme("dialog-warning".into())).score(1.0)]);
             }
@@ -400,6 +411,20 @@ mod tests {
         assert_eq!(human(2048), "2 KiB");
         assert_eq!(file_icon("/x/a.pdf", "file"), Icon::Theme("application-pdf".into()));
         assert_eq!(file_icon("/x/a", "dir"), Icon::Theme("folder".into()));
+    }
+
+    #[test]
+    fn paths_are_recognised() {
+        assert!(is_path("Projects/r"));
+        assert!(is_path("~/Doc"));
+        assert!(!is_path("projects"));
+    }
+
+    #[test]
+    fn tab_keeps_where_it_was_typed() {
+        let hit = Hit { path: "/h/Projects/rust".into(), kind: "dir".into(), bytes: None, rank: Rank::Prefix };
+        assert_eq!(make_item(hit.clone(), "", "Projects/", 0).completion.as_deref(), Some("Projects/rust/"));
+        assert_eq!(make_item(hit, "/files ", "Projects/", 0).completion.as_deref(), Some("/files Projects/rust/"));
     }
 
     #[test]
