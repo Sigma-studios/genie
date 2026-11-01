@@ -1,7 +1,11 @@
 //! What a plugin is. Plugins are compiled in: each one turns a query into
 //! items, on its own thread, and sends them as they come.
+//!
+//! Typing without a slash is the regular search: apps, then files, then Google.
+//! Everything else is a command: `/` lists them, `/maps paris` runs one.
 
 use crate::Event;
+use crate::matcher;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -54,9 +58,11 @@ pub struct Item {
     /// What Tab puts in the input.
     pub completion: Option<String>,
     pub score: f32,
-    /// Listed after everything else, whatever the score, and doesn't count as
-    /// a match when deciding to offer fallbacks.
-    pub background: bool,
+    /// Results sort by this first, lowest on top, then by score: it's what keeps
+    /// apps above files above Google, however often something was used.
+    pub tier: u8,
+    /// A heading above this item when it differs from the previous item's.
+    pub group: Option<String>,
 }
 
 impl Item {
@@ -70,7 +76,8 @@ impl Item {
             actions: Vec::new(),
             completion: None,
             score: 0.0,
-            background: false,
+            tier: 0,
+            group: None,
         }
     }
 
@@ -84,8 +91,8 @@ impl Item {
         self
     }
 
-    pub fn background(mut self) -> Self {
-        self.background = true;
+    pub fn tier(mut self, tier: u8) -> Self {
+        self.tier = tier;
         self
     }
 
@@ -96,10 +103,10 @@ impl Item {
 }
 
 pub struct Query {
-    /// What's typed, without the trigger.
+    /// What's typed, without the command.
     pub text: String,
-    /// The trigger that selected this plugin, if one did.
-    pub trigger: Option<String>,
+    /// The command this is for, by its name. `None` in the regular search.
+    pub command: Option<String>,
     generation: u64,
     current: Arc<AtomicU64>,
     plugin: &'static str,
@@ -122,28 +129,80 @@ impl Query {
     }
 }
 
+/// Something typed after a slash.
+#[derive(Clone)]
+pub struct Command {
+    pub name: String,
+    /// Other names that also run it, like `yt` for `youtube`.
+    pub aliases: Vec<String>,
+    pub description: String,
+    pub icon: String,
+}
+
+impl Command {
+    pub fn new(name: &str, aliases: &[&str], description: &str, icon: &str) -> Self {
+        Self {
+            name: name.into(),
+            aliases: aliases.iter().map(|a| a.to_string()).collect(),
+            description: description.into(),
+            icon: icon.into(),
+        }
+    }
+
+    fn answers_to(&self, name: &str) -> bool {
+        self.name == name || self.aliases.iter().any(|a| a == name)
+    }
+}
+
 pub trait Plugin: Send + Sync {
     fn id(&self) -> &'static str;
 
-    /// Typing one of these first ("f ", "zd ") sends what follows to this
-    /// plugin alone. A plugin with `global` false only answers to them.
-    fn triggers(&self) -> Vec<String> {
+    /// What its commands are listed under in `/list`.
+    fn group(&self) -> &'static str {
+        "Other"
+    }
+
+    fn commands(&self) -> Vec<Command> {
         Vec::new()
     }
 
-    fn global(&self) -> bool {
-        true
+    /// Whether it answers in the regular search.
+    fn regular(&self) -> bool {
+        false
     }
 
     fn query(&self, query: &Query);
 
-    /// Offered when nothing at all matched.
-    fn fallbacks(&self, _text: &str) -> Vec<Item> {
-        Vec::new()
-    }
-
     /// The launcher is about to show: catch up, off the UI thread.
     fn refresh(&self) {}
+}
+
+/// What was started for a query. `items` are there right away: the list of
+/// commands needs no plugin.
+pub struct Started {
+    pub generation: u64,
+    pub pending: usize,
+    pub items: Vec<Item>,
+}
+
+/// What a line of input asks for.
+#[derive(Debug, PartialEq)]
+enum Parsed<'a> {
+    Regular,
+    /// `/ma`: the commands that match.
+    List(&'a str),
+    /// `/maps` or `/maps paris`.
+    Run(&'a str, &'a str),
+}
+
+fn parse(text: &str, known: impl Fn(&str) -> bool) -> Parsed<'_> {
+    let Some(rest) = text.strip_prefix('/') else { return Parsed::Regular };
+    match rest.split_once(char::is_whitespace) {
+        Some((name, arguments)) if known(name) => Parsed::Run(name, arguments),
+        Some(_) => Parsed::List(rest),
+        None if known(rest) => Parsed::Run(rest, ""),
+        None => Parsed::List(rest),
+    }
 }
 
 /// Runs each query on every plugin concerned, and drops the ones still running
@@ -172,17 +231,38 @@ impl Runner {
         self.current.store(self.generation, Ordering::Relaxed);
     }
 
-    /// Returns how many plugins will answer `Event::Finished` for this
-    /// generation, which is the new `self.generation`.
-    pub fn run(&mut self, text: &str) -> (u64, usize) {
+    pub fn run(&mut self, text: &str) -> Started {
         self.cancel();
-        let chosen = self.choose(text);
-        let count = chosen.len();
-        for (plugin, query_text, trigger) in chosen {
+        let all = self.commands();
+        let parsed = parse(text, |name| name == LIST || all.iter().any(|(_, c)| c.answers_to(name)));
+        let mut items = Vec::new();
+        let chosen: Vec<(Arc<dyn Plugin>, String, Option<String>)> = match parsed {
+            Parsed::Regular if text.trim().is_empty() => Vec::new(),
+            Parsed::Regular => {
+                self.plugins.iter().filter(|p| p.regular()).map(|p| (p.clone(), text.to_string(), None)).collect()
+            }
+            Parsed::List(typed) => {
+                let list = list_command();
+                items = list_commands(all.iter().map(|(_, c)| c).chain([&list]), typed);
+                Vec::new()
+            }
+            Parsed::Run(LIST, arguments) => {
+                items = list_grouped(&self.plugins, arguments);
+                Vec::new()
+            }
+            Parsed::Run(name, arguments) => all
+                .iter()
+                .find(|(_, c)| c.answers_to(name))
+                .map(|(p, c)| (p.clone(), arguments.to_string(), Some(c.name.clone())))
+                .into_iter()
+                .collect(),
+        };
+        let pending = chosen.len();
+        for (plugin, query_text, command) in chosen {
             let id = plugin.id();
             let query = Query {
                 text: query_text,
-                trigger,
+                command,
                 generation: self.generation,
                 current: self.current.clone(),
                 plugin: id,
@@ -195,42 +275,129 @@ impl Runner {
                 let _ = events.send(Event::Finished { generation });
             });
         }
-        (self.generation, count)
+        Started { generation: self.generation, pending, items }
     }
 
-    fn choose(&self, text: &str) -> Vec<(Arc<dyn Plugin>, String, Option<String>)> {
-        for plugin in &self.plugins {
-            for trigger in plugin.triggers() {
-                if let Some(rest) = text.strip_prefix(trigger.as_str()) {
-                    return vec![(plugin.clone(), rest.to_string(), Some(trigger))];
-                }
-            }
+    fn commands(&self) -> Vec<(Arc<dyn Plugin>, Command)> {
+        self.plugins.iter().flat_map(|p| p.commands().into_iter().map(|c| (p.clone(), c)).collect::<Vec<_>>()).collect()
+    }
+}
+
+const LIST: &str = "list";
+
+fn list_command() -> Command {
+    Command::new(LIST, &[], "Every command, by group, with a search", "view-list-details")
+}
+
+/// `/list`: the input is its search bar. The groups keep the plugins' order.
+fn list_grouped(plugins: &[Arc<dyn Plugin>], typed: &str) -> Vec<Item> {
+    let mut items = Vec::new();
+    for (tier, plugin) in plugins.iter().enumerate() {
+        let commands = plugin.commands();
+        for mut item in list_commands(commands.iter(), typed) {
+            item.tier = tier as u8;
+            item.group = Some(plugin.group().to_string());
+            items.push(item);
         }
-        if text.trim().is_empty() {
-            return Vec::new();
-        }
-        self.plugins
-            .iter()
-            .filter(|p| p.global())
-            .map(|p| (p.clone(), text.to_string(), None))
-            .collect()
+    }
+    items
+}
+
+/// By name, and by what they do, so `/music` finds Spotify. All of them,
+/// alphabetically, for a bare slash.
+fn list_commands<'a>(commands: impl Iterator<Item = &'a Command>, typed: &str) -> Vec<Item> {
+    let typed = typed.trim();
+    let mut sorted: Vec<&Command> = commands.collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let count = sorted.len() as f32;
+    sorted
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, command)| {
+            let names: Vec<(&str, f32)> = std::iter::once((command.name.as_str(), 1.0))
+                .chain(command.aliases.iter().map(|a| (a.as_str(), 1.0)))
+                .chain(std::iter::once((command.description.as_str(), 0.5)))
+                .collect();
+            let score = if typed.is_empty() { Some(1.0) } else { matcher::score(typed, &names) }?;
+            let order = (count - i as f32) * 0.0001;
+            let mut item = Item::new(
+                format!("/{}", command.name),
+                format!("/{}", command.name),
+                &command.description,
+                Icon::Theme(command.icon.clone()),
+            )
+            .completion(format!("/{} ", command.name))
+            .score(score + order);
+            item.plugin = "commands";
+            Some(item)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn known(name: &str) -> bool {
+        ["maps", "power"].contains(&name)
     }
 
-    /// Only for an untriggered query: a trigger's plugin has already had its say.
-    pub fn fallbacks(&self, text: &str) -> Vec<Item> {
-        if self.plugins.iter().any(|p| p.triggers().iter().any(|t| text.starts_with(t.as_str()))) {
-            return Vec::new();
+    #[test]
+    fn input_is_parsed() {
+        assert_eq!(parse("firefox", known), Parsed::Regular);
+        assert_eq!(parse("a /maps", known), Parsed::Regular);
+        assert_eq!(parse("/", known), Parsed::List(""));
+        assert_eq!(parse("/ma", known), Parsed::List("ma"));
+        assert_eq!(parse("/maps", known), Parsed::Run("maps", ""));
+        assert_eq!(parse("/maps paris texas", known), Parsed::Run("maps", "paris texas"));
+        assert_eq!(parse("/maps ", known), Parsed::Run("maps", ""));
+        assert_eq!(parse("/nope x", known), Parsed::List("nope x"));
+    }
+
+    #[test]
+    fn commands_are_found_by_name_alias_and_description() {
+        let commands = [
+            Command::new("spotify", &["sp"], "Control the music", "spotify"),
+            Command::new("maps", &[], "Search Google Maps", "map"),
+        ];
+        let titles = |typed| -> Vec<String> {
+            let mut items = list_commands(commands.iter(), typed);
+            items.sort_by(|a, b| b.score.total_cmp(&a.score));
+            items.into_iter().map(|i| i.title).collect()
+        };
+        assert_eq!(titles(""), ["/maps", "/spotify"]);
+        assert_eq!(titles("sp"), ["/spotify"]);
+        assert_eq!(titles("music"), ["/spotify"]);
+        assert!(titles("zzz").is_empty());
+        assert_eq!(list_commands(commands.iter(), "ma")[0].completion.as_deref(), Some("/maps "));
+    }
+
+    struct Fake(&'static str, Vec<Command>);
+
+    impl Plugin for Fake {
+        fn id(&self) -> &'static str {
+            self.0
         }
-        self.plugins
-            .iter()
-            .flat_map(|p| {
-                let id = p.id();
-                let mut items = p.fallbacks(text);
-                for item in &mut items {
-                    item.plugin = id;
-                }
-                items
-            })
-            .collect()
+        fn group(&self) -> &'static str {
+            self.0
+        }
+        fn commands(&self) -> Vec<Command> {
+            self.1.clone()
+        }
+        fn query(&self, _: &Query) {}
+    }
+
+    #[test]
+    fn the_list_is_grouped_and_searchable() {
+        let plugins: Vec<Arc<dyn Plugin>> = vec![
+            Arc::new(Fake("Spotify", vec![Command::new("queue", &[], "Add a song", "a"), Command::new("next", &[], "Skip", "b")])),
+            Arc::new(Fake("Web", vec![Command::new("maps", &[], "Search Maps", "c")])),
+        ];
+        let all = list_grouped(&plugins, "");
+        assert_eq!(all.iter().map(|i| i.group.as_deref().unwrap()).collect::<Vec<_>>(), ["Spotify", "Spotify", "Web"]);
+        assert!(all[0].tier < all[2].tier);
+        let found = list_grouped(&plugins, "song");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "/queue");
     }
 }

@@ -1,10 +1,11 @@
-//! `zd name`: Zed's recent workspaces, from its own database, most recent
+//! `/zed name`: Zed's recent workspaces, from its own database, most recent
 //! first. A schema change upstream shows up as an item saying so.
 
 use crate::config;
 use crate::launch;
 use crate::matcher;
 use crate::plugin::Action;
+use crate::plugin::Command;
 use crate::plugin::Effect;
 use crate::plugin::Icon;
 use crate::plugin::Item;
@@ -58,12 +59,12 @@ impl Plugin for Zed {
         "zed"
     }
 
-    fn triggers(&self) -> Vec<String> {
-        vec!["zd ".into()]
+    fn group(&self) -> &'static str {
+        "Zed"
     }
 
-    fn global(&self) -> bool {
-        false
+    fn commands(&self) -> Vec<Command> {
+        vec![Command::new("zed", &["zd"], "Open a recent Zed workspace", "zed")]
     }
 
     fn query(&self, query: &Query) {

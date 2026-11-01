@@ -27,12 +27,16 @@ pub struct Spotify {
 pub struct Engine {
     pub id: String,
     pub name: String,
-    pub trigger: String,
+    /// `/this something` searches it.
+    pub command: String,
+    /// A shorter way to type it.
+    #[serde(default)]
+    pub alias: Option<String>,
     /// `%s` is the query.
     pub url: String,
-    /// Offered when nothing else matched.
+    /// Offered in the regular search, after apps and files.
     #[serde(default)]
-    pub fallback: bool,
+    pub regular: bool,
     /// In the icon theme.
     #[serde(default)]
     pub icon: Option<String>,
@@ -91,31 +95,32 @@ fn xdg_dir(variable: &str, fallback: &str) -> PathBuf {
 
 /// The ids are Albert's, so usage history imported from it still applies.
 fn engines() -> Vec<Engine> {
-    let engine = |id: &str, name: &str, trigger: &str, url: &str, fallback| Engine {
+    let engine = |id: &str, name: &str, command: &str, alias: &str, url: &str| Engine {
         id: id.into(),
         name: name.into(),
-        trigger: trigger.into(),
+        command: command.into(),
+        alias: Some(alias.to_string()).filter(|a| a != command),
         url: url.into(),
-        fallback,
+        regular: command == "google",
         icon: None,
     };
     vec![
-        engine("247c2e7e", "Amazon", "ama", "https://www.amazon.com/s/?field-keywords=%s", false),
-        engine("c51c2a67", "Chat GPT", "gpt", "https://chat.openai.com/?q=%s", true),
-        engine("4962f117", "DuckDuckGo", "dd", "https://duckduckgo.com/?q=%s", false),
-        engine("bdf36e73", "Ebay", "eb", "https://www.ebay.com/sch/i.html?_nkw=%s", false),
-        engine("7f41c049", "GitHub", "gh", "https://github.com/search?utf8=✓&q=%s", false),
-        engine("02fb8f09", "Google", "gg", "https://www.google.com/search?q=%s", true),
-        engine("48998825", "Google Maps", "maps", "https://www.google.com/maps/search/%s/", true),
-        engine("9498795b", "Google Scholar", "scholar", "https://scholar.google.com/scholar?q=%s", false),
-        engine("74d48b98", "Google Translate", "gt", "https://translate.google.com/?text=%s", false),
-        engine("2b062a76", "Wolfram Alpha", "wa", "https://www.wolframalpha.com/input/?i=%s", false),
-        engine("e7021408", "YouTube", "yt", "https://www.youtube.com/results?search_query=%s", true),
+        engine("247c2e7e", "Amazon", "amazon", "ama", "https://www.amazon.com/s/?field-keywords=%s"),
+        engine("c51c2a67", "ChatGPT", "gpt", "gpt", "https://chat.openai.com/?q=%s"),
+        engine("4962f117", "DuckDuckGo", "duckduckgo", "dd", "https://duckduckgo.com/?q=%s"),
+        engine("bdf36e73", "eBay", "ebay", "eb", "https://www.ebay.com/sch/i.html?_nkw=%s"),
+        engine("7f41c049", "GitHub", "github", "gh", "https://github.com/search?utf8=✓&q=%s"),
+        engine("02fb8f09", "Google", "google", "gg", "https://www.google.com/search?q=%s"),
+        engine("48998825", "Google Maps", "maps", "maps", "https://www.google.com/maps/search/%s/"),
+        engine("9498795b", "Google Scholar", "scholar", "scholar", "https://scholar.google.com/scholar?q=%s"),
+        engine("74d48b98", "Google Translate", "translate", "gt", "https://translate.google.com/?text=%s"),
+        engine("2b062a76", "Wolfram Alpha", "wolfram", "wa", "https://www.wolframalpha.com/input/?i=%s"),
+        engine("e7021408", "YouTube", "youtube", "yt", "https://www.youtube.com/results?search_query=%s"),
     ]
 }
 
-/// The power menu behind Ctrl+Alt+Delete: `genie show Power` lists them all,
-/// thanks to the shared prefix. org.kde.Shutdown acts without KDE's prompt.
+/// The power menu behind Ctrl+Alt+Delete: `genie show /power` lists them all.
+/// org.kde.Shutdown acts without KDE's prompt.
 fn power() -> Vec<PowerEntry> {
     let entry = |id: &str, title: &str, icon: &str, command: &[&str]| PowerEntry {
         id: id.into(),
@@ -125,9 +130,9 @@ fn power() -> Vec<PowerEntry> {
     };
     let shutdown = |method: &'static str| ["qdbus", "org.kde.Shutdown", "/Shutdown", method];
     vec![
-        entry("Poweroff", "Power: Shut down", "system-shutdown", &shutdown("org.kde.Shutdown.logoutAndShutdown")),
-        entry("Reboot", "Power: Restart", "system-reboot", &shutdown("org.kde.Shutdown.logoutAndReboot")),
-        entry("Logout", "Power: Log out", "system-log-out", &shutdown("org.kde.Shutdown.logout")),
-        entry("Lock", "Power: Lock", "system-lock-screen", &["loginctl", "lock-session"]),
+        entry("Poweroff", "Shut down", "system-shutdown", &shutdown("org.kde.Shutdown.logoutAndShutdown")),
+        entry("Reboot", "Restart", "system-reboot", &shutdown("org.kde.Shutdown.logoutAndReboot")),
+        entry("Logout", "Log out", "system-log-out", &shutdown("org.kde.Shutdown.logout")),
+        entry("Lock", "Lock", "system-lock-screen", &["loginctl", "lock-session"]),
     ]
 }

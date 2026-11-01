@@ -61,6 +61,13 @@ fn random() -> u32 {
     std::collections::hash_map::RandomState::new().hash_one(std::process::id()) as u32
 }
 
+/// For what happens after the launcher has hidden.
+pub fn notify(message: &str) {
+    let mut command = Command::new("notify-send");
+    command.args(["--app-name=Génie", "Génie", message]);
+    run(command, None, None);
+}
+
 /// The first of these programs on PATH.
 pub fn which(names: &[&str]) -> Option<String> {
     names.iter().find(|name| on_path(name)).map(|name| name.to_string())

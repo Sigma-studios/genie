@@ -3,6 +3,7 @@
 use crate::config::PowerEntry;
 use crate::matcher;
 use crate::plugin::Action;
+use crate::plugin::Command;
 use crate::plugin::Effect;
 use crate::plugin::Icon;
 use crate::plugin::Item;
@@ -16,6 +17,14 @@ impl Plugin for Power {
         "power"
     }
 
+    fn group(&self) -> &'static str {
+        "System"
+    }
+
+    fn commands(&self) -> Vec<Command> {
+        vec![Command::new("power", &[], "Shut down, restart, log out or lock", "system-shutdown")]
+    }
+
     fn query(&self, query: &Query) {
         let count = self.0.len() as f32;
         query.send(
@@ -23,18 +32,20 @@ impl Plugin for Power {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, entry)| {
-                    matcher::score(&query.text, &[(&entry.title, 1.0)])?;
+                    if !query.text.trim().is_empty() {
+                        matcher::score(&query.text, &[(&entry.title, 1.0)])?;
+                    }
                     let spawn = Effect::Spawn {
                         argv: entry.command.clone(),
                         cwd: None,
                         id: "genie-power".into(),
                     };
-                    // Above other matches, and in the menu's order: it's a menu.
-                    let order = (count - i as f32) * 0.01;
+                    // In the menu's order, however often each was used: it's a menu.
+                    let order = (count - i as f32) * 10.0;
                     Some(
                         Item::new(&entry.id, &entry.title, "", Icon::Theme(entry.icon.clone()))
                             .action(Action::new("run", "Run", spawn))
-                            .score(2.0 + order),
+                            .score(order),
                     )
                 })
                 .collect(),

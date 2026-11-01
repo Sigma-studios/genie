@@ -1,9 +1,9 @@
-//! `gg something` searches Google. Typing an engine's name completes its
-//! trigger, and some engines are offered when nothing else matched.
+//! `/maps paris` searches Google Maps. Google also comes last in the regular
+//! search.
 
 use crate::config::Engine;
-use crate::matcher;
 use crate::plugin::Action;
+use crate::plugin::Command;
 use crate::plugin::Effect;
 use crate::plugin::Icon;
 use crate::plugin::Item;
@@ -12,6 +12,10 @@ use crate::plugin::Query;
 use percent_encoding::NON_ALPHANUMERIC;
 use percent_encoding::utf8_percent_encode;
 
+const ICON: &str = "internet-web-browser";
+/// Below apps and files.
+const TIER: u8 = 2;
+
 pub struct WebSearch(pub Vec<Engine>);
 
 fn url(engine: &Engine, text: &str) -> String {
@@ -19,12 +23,11 @@ fn url(engine: &Engine, text: &str) -> String {
 }
 
 fn icon(engine: &Engine) -> Icon {
-    Icon::Theme(engine.icon.clone().unwrap_or_else(|| "internet-web-browser".into()))
+    Icon::Theme(engine.icon.clone().unwrap_or_else(|| ICON.into()))
 }
 
 fn search(engine: &Engine, text: &str) -> Item {
-    let subtitle = format!("Search {}", engine.name);
-    Item::new(&engine.id, format!("{}: {text}", engine.name), subtitle, icon(engine))
+    Item::new(&engine.id, format!("{}: {text}", engine.name), format!("Search {}", engine.name), icon(engine))
         .action(Action::new("run", "Search", Effect::Open(url(engine, text))))
 }
 
@@ -33,41 +36,40 @@ impl Plugin for WebSearch {
         "websearch"
     }
 
-    fn triggers(&self) -> Vec<String> {
-        self.0.iter().map(|e| format!("{} ", e.trigger)).collect()
+    fn group(&self) -> &'static str {
+        "Web search"
+    }
+
+    fn commands(&self) -> Vec<Command> {
+        self.0
+            .iter()
+            .map(|engine| {
+                let aliases: Vec<&str> = engine.alias.iter().map(String::as_str).collect();
+                let description = format!("Search {}", engine.name);
+                Command::new(&engine.command, &aliases, &description, engine.icon.as_deref().unwrap_or(ICON))
+            })
+            .collect()
+    }
+
+    fn regular(&self) -> bool {
+        true
     }
 
     fn query(&self, query: &Query) {
-        if let Some(trigger) = &query.trigger {
-            let text = query.text.trim();
-            let Some(engine) = self.0.iter().find(|e| format!("{} ", e.trigger) == *trigger) else { return };
+        let text = query.text.trim();
+        let Some(command) = &query.command else {
             if !text.is_empty() {
-                query.send(vec![search(engine, text).score(1.0)]);
+                query.send(self.0.iter().filter(|e| e.regular).map(|e| search(e, text).tier(TIER)).collect());
             }
             return;
-        }
-        query.send(
-            self.0
-                .iter()
-                .filter_map(|engine| {
-                    let score = matcher::score(&query.text, &[(&engine.name, 1.0), (&engine.trigger, 1.0)])?;
-                    let subtitle = format!("Type “{} ” to search", engine.trigger);
-                    Some(
-                        Item::new(format!("{}.engine", engine.id), &engine.name, subtitle, icon(engine))
-                            .completion(format!("{} ", engine.trigger))
-                            .score(score * 0.8),
-                    )
-                })
-                .collect(),
-        );
-    }
-
-    fn fallbacks(&self, text: &str) -> Vec<Item> {
-        let text = text.trim();
+        };
+        let Some(engine) = self.0.iter().find(|e| e.command == *command) else { return };
         if text.is_empty() {
-            return Vec::new();
+            let hint = format!("Type what to search on {}", engine.name);
+            query.send(vec![Item::new(format!("{}.hint", engine.id), &engine.name, hint, icon(engine)).completion(format!("/{command} "))]);
+        } else {
+            query.send(vec![search(engine, text)]);
         }
-        self.0.iter().filter(|e| e.fallback).map(|e| search(e, text)).collect()
     }
 }
 
@@ -80,9 +82,10 @@ mod tests {
         let engine = Engine {
             id: "x".into(),
             name: "X".into(),
-            trigger: "x".into(),
+            command: "x".into(),
+            alias: None,
             url: "https://x.org/?q=%s".into(),
-            fallback: false,
+            regular: false,
             icon: None,
         };
         assert_eq!(url(&engine, "é & b"), "https://x.org/?q=%C3%A9%20%26%20b");

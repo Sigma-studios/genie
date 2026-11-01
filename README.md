@@ -3,13 +3,19 @@
 A fast application launcher for Wayland, in Rust. It stays resident, opens in a
 few milliseconds, and draws with egui on a layer surface.
 
-| Type | To get |
+Type to search apps, then files, then Google, in that order. Everything else is a command:
+`/` lists them, and the list narrows as you type.
+
+| Command | What it does |
 |---|---|
-| a name | Apps, by name and keywords, and the power entries |
-| `f name`, `f folder/name`, `f ~/path` | Files, through [répertoire](https://github.com/Sigma-studios/repertoire). A plain name also lists them after other results |
-| `zd name` | Zed's recent workspaces |
-| `sp`, `sp name` | Spotify's controls, and search |
-| `gg`, `yt`, `gh`, `dd`, `maps`, `gpt`… then a query | Web searches. Some are offered when nothing else matched |
+| `/files name` (`/f`), also `folder/name` and `~/path` | Files, through [répertoire](https://github.com/Sigma-studios/repertoire) |
+| `/zed name` (`/zd`) | Zed's recent workspaces |
+| `/spotify` (`/sp`, `/play`), `/spotify name` | Spotify's controls, and search |
+| `/queue name` | Search songs, and queue one, or play it if nothing is playing |
+| `/pause`, `/next`, `/previous` | Control the player |
+| `/list` | Every command, by group, and the input searches them |
+| `/power` | Shut down, restart, log out, lock |
+| `/maps`, `/youtube` (`/yt`), `/github` (`/gh`), `/gpt`, `/google` (`/gg`)… | Web searches |
 
 Enter runs the selected result, Alt lists its other actions (Alt+Up/Down, Alt+Enter),
 and Tab completes. Up on the first result walks back through past queries. Escape or
@@ -39,13 +45,15 @@ whole list; the defaults are in `src/config.rs`.
     [[websearch]]
     id = "ddg"
     name = "DuckDuckGo"
-    trigger = "dd"
+    command = "duckduckgo"
+    alias = "dd"
     url = "https://duckduckgo.com/?q=%s"
-    fallback = true
+    # In the regular search, instead of Google.
+    regular = true
 
-`sp` controls the player as is. Its search needs an app from
+`/spotify` controls the player as is. Searching and `/queue` need an app from
 [Spotify's dashboard](https://developer.spotify.com/dashboard) whose redirect URI is
-`http://127.0.0.1:47813/callback`. The first search then opens a tab to sign in, with
+`http://127.0.0.1:47813/callback`. Adding to the queue also takes Spotify Premium. The first search opens a tab to sign in, with
 OAuth and PKCE, so there's no secret to keep. The tokens stay in
 `~/.local/share/genie/spotify.json`, readable by you alone.
 

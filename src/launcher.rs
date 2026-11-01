@@ -36,6 +36,8 @@ const ICON_GAP: f32 = 6.0;
 const TITLE_FONT: f32 = 14.0 * 4.0 / 3.0;
 const SUBTITLE_FONT: f32 = 9.0 * 4.0 / 3.0;
 const ACTION_HEIGHT: f32 = 30.0;
+const HEADING_HEIGHT: f32 = 24.0;
+const HEADING_FONT: f32 = 12.0;
 
 const WINDOW: Color32 = Color32::from_rgb(0x20, 0x23, 0x26);
 const BORDER: Color32 = Color32::from_rgb(0x43, 0x48, 0x4d);
@@ -71,6 +73,8 @@ pub struct Launcher {
     stale: bool,
     scroll_to_selected: bool,
     cursor_to_end: bool,
+    /// The selection was moved by hand, so results still arriving don't reset it.
+    selection_moved: bool,
     /// Up in the input walks past queries. Where we are, if we're doing that.
     recall: Option<usize>,
     pub runner: Runner,
@@ -90,6 +94,7 @@ impl Launcher {
             stale: false,
             scroll_to_selected: false,
             cursor_to_end: false,
+            selection_moved: false,
             recall: None,
             runner,
             history,
@@ -113,13 +118,16 @@ impl Launcher {
 
     fn query_changed(&mut self) {
         self.query = self.input.clone();
-        let (generation, pending) = self.runner.run(&self.query);
-        self.generation = generation;
-        self.pending = pending;
+        let started = self.runner.run(&self.query);
+        self.generation = started.generation;
+        self.pending = started.pending;
         self.stale = true;
-        if pending == 0 {
-            self.items.clear();
-            self.selected = 0;
+        self.selection_moved = false;
+        if started.pending == 0 {
+            self.items = started.items;
+            sort(&mut self.items);
+            self.select(0);
+            self.selection_moved = false;
             self.stale = false;
         }
     }
@@ -131,7 +139,7 @@ impl Launcher {
         for item in &mut items {
             item.score += self.history.boost(item.plugin, &item.id, &self.query);
         }
-        let selected = (!self.stale).then(|| self.items.get(self.selected).map(|i| (i.plugin, i.id.clone()))).flatten();
+        let selected = self.items.get(self.selected).filter(|_| self.selection_moved && !self.stale).map(|i| (i.plugin, i.id.clone()));
         if self.stale {
             self.items.clear();
             self.stale = false;
@@ -140,9 +148,7 @@ impl Launcher {
         }
         self.items.extend(items);
         sort(&mut self.items);
-        if let Some((plugin, id)) = selected {
-            self.selected = self.items.iter().position(|i| i.plugin == plugin && i.id == id).unwrap_or(0);
-        }
+        self.selected = selected.and_then(|(plugin, id)| self.items.iter().position(|i| i.plugin == plugin && i.id == id)).unwrap_or(0);
     }
 
     pub fn finished(&mut self, generation: u64) {
@@ -150,23 +156,16 @@ impl Launcher {
             return;
         }
         self.pending = self.pending.saturating_sub(1);
-        if self.pending != 0 {
-            return;
-        }
-        if self.stale {
+        if self.pending == 0 && self.stale {
             self.items.clear();
+            self.selected = 0;
             self.stale = false;
-        }
-        // Files in the background match almost anything, so they don't count.
-        if self.items.iter().all(|item| item.background) {
-            self.items.extend(self.runner.fallbacks(&self.query));
-            sort(&mut self.items);
-            self.select(0);
         }
     }
 
     fn select(&mut self, index: usize) {
         self.selected = index;
+        self.selection_moved = true;
         self.action = 0;
         self.scroll_to_selected = true;
     }
@@ -200,6 +199,10 @@ impl Launcher {
     }
 
     fn activate(&mut self, action: usize, requests: &mut Vec<Request>) {
+        // Still showing the previous query's results: not what was typed.
+        if self.stale {
+            return;
+        }
         let Some(item) = self.items.get(self.selected) else { return };
         if let Some(run) = item.actions.get(action) {
             requests.push(Request::Run(run.clone(), item.clone()));
@@ -301,6 +304,7 @@ impl Launcher {
             .id_salt("input")
             .font(FontId::proportional(INPUT_FONT))
             .text_color(TEXT)
+            .hint_text(egui::RichText::new("Search, or / for commands").color(SUBTEXT))
             .frame(egui::Frame::NONE)
             .desired_width(inner.width())
             .margin(Vec2::ZERO)
@@ -331,6 +335,13 @@ impl Launcher {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(0.0, ROW_SPACING);
                 for (index, item) in self.items.iter().enumerate() {
+                    if let Some(group) = &item.group
+                        && (index == 0 || self.items[index - 1].group.as_ref() != Some(group))
+                    {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), HEADING_HEIGHT), Sense::hover());
+                        let text = galley(ui, group, HEADING_FONT, SUBTEXT, rect.width());
+                        ui.painter().galley(egui::pos2(rect.left() + ROW_PADDING, rect.bottom() - text.size().y - 2.0), text, SUBTEXT);
+                    }
                     let selected = index == self.selected;
                     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
                     if !ui.is_rect_visible(rect) {
@@ -395,9 +406,9 @@ impl Launcher {
     }
 }
 
-/// Best first, background items last. Stable, so fallbacks keep their order.
+/// By tier, then best first.
 fn sort(items: &mut [Item]) {
-    items.sort_by(|a, b| a.background.cmp(&b.background).then(b.score.total_cmp(&a.score)));
+    items.sort_by(|a, b| a.tier.cmp(&b.tier).then(b.score.total_cmp(&a.score)));
 }
 
 /// One line, cut with an ellipsis when too long.

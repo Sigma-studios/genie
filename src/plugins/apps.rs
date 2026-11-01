@@ -49,6 +49,10 @@ impl Plugin for Apps {
         "applications"
     }
 
+    fn regular(&self) -> bool {
+        true
+    }
+
     fn refresh(&self) {
         let apps = scan(&self.terminal);
         *self.apps.write().unwrap() = apps;

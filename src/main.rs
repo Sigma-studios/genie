@@ -197,11 +197,11 @@ fn daemon() {
     let config = config::load();
     let plugins: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(plugins::apps::Apps::new(config.terminal.clone())),
+        Arc::new(plugins::files::Files),
+        Arc::new(plugins::spotify::Spotify::new(config.spotify)),
+        Arc::new(plugins::zed::Zed::new(config.terminal.clone())),
         Arc::new(plugins::power::Power(config.power.clone())),
         Arc::new(plugins::websearch::WebSearch(config.websearch.clone())),
-        Arc::new(plugins::files::Files),
-        Arc::new(plugins::zed::Zed::new(config.terminal.clone())),
-        Arc::new(plugins::spotify::Spotify::new(config.spotify)),
     ];
 
     let wayland_events = events.clone();

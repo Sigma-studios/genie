@@ -1,4 +1,4 @@
-//! `f name`: every file by name, through the répertoire daemon, which answers
+//! `/files name`: every file by name, through the répertoire daemon, which answers
 //! in milliseconds (newline-delimited JSON, see docs/PROTOCOL.md there).
 //!
 //! Queries with a slash are paths. Every segment before the last slash is an
@@ -8,11 +8,12 @@
 //! / or ~ is a real path and is listed from the filesystem. Tab on a folder
 //! completes it with a slash, to go one level down.
 //!
-//! Without the trigger, a plain name of three letters or more also lists files,
-//! after every other result.
+//! A plain name of three letters or more also lists a few files in the regular
+//! search, after apps.
 
 use crate::config;
 use crate::plugin::Action;
+use crate::plugin::Command;
 use crate::plugin::Effect;
 use crate::plugin::Icon;
 use crate::plugin::Item;
@@ -35,8 +36,14 @@ const LIMIT: usize = 40;
 const ANCHORS: usize = 20;
 /// Entries asked for per listed folder.
 const LISTING: usize = 5000;
-/// Fewer letters than this match too much to be worth listing untriggered.
-const UNTRIGGERED_MINIMUM: usize = 3;
+/// Fewer letters than this match too much to be worth listing in the regular
+/// search.
+const REGULAR_MINIMUM: usize = 3;
+/// Few enough there that Google, after them, stays within reach. `/files` has
+/// them all.
+const REGULAR_LIMIT: usize = 4;
+/// Below apps.
+const TIER: u8 = 1;
 
 pub struct Files;
 
@@ -302,7 +309,7 @@ fn make_item(hit: Hit, typed: &str, position: usize) -> Item {
     }
     // Keeps the daemon's order among results of the same rank.
     item.action(Action::new("copy", "Copy the path", Effect::Copy(hit.path)))
-        .completion(format!("f {typed}{name}{slash}"))
+        .completion(format!("/files {typed}{name}{slash}"))
         .score(hit.rank.score() - position as f32 * 0.001)
 }
 
@@ -311,19 +318,28 @@ impl Plugin for Files {
         "files"
     }
 
-    fn triggers(&self) -> Vec<String> {
-        vec!["f ".into()]
+    fn group(&self) -> &'static str {
+        "Files"
+    }
+
+    fn commands(&self) -> Vec<Command> {
+        vec![Command::new("files", &["f"], "Find files and folders by name, or by path", "folder")]
+    }
+
+    fn regular(&self) -> bool {
+        true
     }
 
     fn query(&self, query: &Query) {
         let text = query.text.trim();
-        if query.trigger.is_none() {
-            if text.chars().count() < UNTRIGGERED_MINIMUM || text.contains('/') || text.starts_with('~') {
+        if query.command.is_none() {
+            if text.chars().count() < REGULAR_MINIMUM || text.contains('/') || text.starts_with('~') {
                 return;
             }
             // Nothing to say if the daemon's down: this wasn't asked for.
             if let Ok(hits) = search(text) {
-                query.send(hits.into_iter().enumerate().map(|(i, h)| make_item(h, "", i).background()).collect());
+                let items = hits.into_iter().take(REGULAR_LIMIT).enumerate();
+                query.send(items.map(|(i, h)| make_item(h, "", i).tier(TIER)).collect());
             }
             return;
         }

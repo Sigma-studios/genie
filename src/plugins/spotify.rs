@@ -1,12 +1,14 @@
-//! `sp`: the player's controls over MPRIS, and `sp name` searches Spotify. The
-//! player is told what to play through MPRIS too, so playing doesn't go through
-//! the Web API. Only the search does: the first one opens a browser tab to sign
-//! in (OAuth with PKCE, so no secret), and the tokens are kept after that.
+//! `/spotify`: the player's controls over MPRIS, and `/spotify name` searches.
+//! The player is told what to play through MPRIS too, so playing doesn't go
+//! through the Web API. Searching and `/queue` do: the first use opens a browser
+//! tab to sign in (OAuth with PKCE, so no secret), and the tokens are kept after
+//! that. Spotify only lets Premium accounts touch the queue.
 
 use crate::config;
 use crate::launch;
 use crate::matcher;
 use crate::plugin::Action;
+use crate::plugin::Command as LauncherCommand;
 use crate::plugin::Effect;
 use crate::plugin::Icon;
 use crate::plugin::Item;
@@ -50,7 +52,14 @@ const DASHBOARD: &str = "https://developer.spotify.com/dashboard";
 /// How long the browser tab has to come back.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Adding to the queue. Searching itself needs no scope.
+const SCOPES: &str = "user-modify-playback-state";
+
 pub struct Spotify {
+    auth: Arc<Auth>,
+}
+
+struct Auth {
     client_id: String,
     tokens: Mutex<Option<Tokens>>,
     signing_in: Arc<AtomicBool>,
@@ -121,12 +130,12 @@ fn challenge(verifier: &str) -> String {
 }
 
 fn authorize_url(client_id: &str, challenge: &str, state: &str) -> String {
-    // No scopes: searching needs none, and playing goes through the player.
     format!(
-        "https://accounts.spotify.com/authorize?response_type=code&client_id={}&redirect_uri={}\
+        "https://accounts.spotify.com/authorize?response_type=code&client_id={}&redirect_uri={}&scope={}\
          &code_challenge_method=S256&code_challenge={challenge}&state={state}",
         encode(client_id),
         encode(REDIRECT_URI),
+        encode(SCOPES),
     )
 }
 
@@ -204,9 +213,12 @@ fn request_tokens(form: &[(&str, &str)], previous_refresh: Option<&str>) -> Resu
 
 impl Spotify {
     pub fn new(credentials: config::Spotify) -> Self {
-        Self { client_id: credentials.client_id, tokens: Mutex::new(load_tokens()), signing_in: Arc::new(AtomicBool::new(false)) }
+        let auth = Auth { client_id: credentials.client_id, tokens: Mutex::new(load_tokens()), signing_in: Arc::new(AtomicBool::new(false)) };
+        Self { auth: Arc::new(auth) }
     }
+}
 
+impl Auth {
     fn token(&self) -> Result<String, Failure> {
         let mut tokens = self.tokens.lock().unwrap();
         // The sign-in thread saves to the file: it may know better.
@@ -279,8 +291,9 @@ impl Spotify {
         Ok(())
     }
 
-    fn search(&self, text: &str) -> Result<Vec<Item>, Failure> {
-        let url = format!("https://api.spotify.com/v1/search?type=track,artist,album,playlist&limit=5&q={}", encode(text));
+    /// `types` is what Spotify's `type` parameter takes.
+    fn search(&self, text: &str, types: &str) -> Result<Vec<Item>, Failure> {
+        let url = format!("https://api.spotify.com/v1/search?type={types}&limit=5&q={}", encode(text));
         let token = self.token()?;
         let mut response = match ureq::get(&url).header("Authorization", format!("Bearer {token}")).call() {
             Ok(response) => response,
@@ -295,6 +308,31 @@ impl Spotify {
         };
         let answer: Value = response.body_mut().read_json().map_err(|e| Failure::Other(e.to_string()))?;
         Ok(parse_results(&answer))
+    }
+
+    /// Queues it, or plays it if there's nothing to queue after: Spotify isn't
+    /// running or has stopped. Paused still queues.
+    /// Says how it went with a notification: the launcher has hidden by then.
+    fn add_to_queue(&self, uri: &str, title: &str) {
+        if idle() {
+            open_uri(uri);
+            return launch::notify(&format!("Playing {title}."));
+        }
+        let token = match self.token() {
+            Ok(token) => token,
+            Err(_) => return launch::notify("Sign in to Spotify first: search for something with /spotify."),
+        };
+        let url = format!("https://api.spotify.com/v1/me/player/queue?uri={}", encode(uri));
+        match ureq::post(&url).header("Authorization", format!("Bearer {token}")).send_empty() {
+            Ok(_) => launch::notify(&format!("{title} is next in the queue.")),
+            // The player has something loaded, but Spotify knows no active device.
+            Err(ureq::Error::StatusCode(404)) => {
+                open_uri(uri);
+                launch::notify(&format!("Playing {title}."));
+            }
+            Err(ureq::Error::StatusCode(403)) => launch::notify("Spotify refused: the queue takes a Premium account."),
+            Err(e) => launch::notify(&format!("Couldn't add to the queue: {e}")),
+        }
     }
 }
 
@@ -354,6 +392,16 @@ fn player_call(method: &str) {
     busctl(&["call", BUS, OBJECT, PLAYER, method]);
 }
 
+/// Not running, which busctl fails on, or stopped.
+fn idle() -> bool {
+    busctl(&["-j", "get-property", BUS, OBJECT, PLAYER, "PlaybackStatus"]).is_none_or(|answer| is_stopped(&answer))
+}
+
+/// From busctl's JSON.
+fn is_stopped(answer: &str) -> bool {
+    serde_json::from_str::<Value>(answer).is_ok_and(|status| status["data"] == "Stopped")
+}
+
 fn running() -> bool {
     busctl(&["-j", "get-property", BUS, OBJECT, PLAYER, "PlaybackStatus"]).is_some()
 }
@@ -389,47 +437,10 @@ fn control(id: &str, title: &str, subtitle: &str, icon: &str, method: &'static s
         .score(score)
 }
 
-impl Plugin for Spotify {
-    fn id(&self) -> &'static str {
-        "spotify"
-    }
-
-    fn triggers(&self) -> Vec<String> {
-        vec!["sp ".into()]
-    }
-
-    fn global(&self) -> bool {
-        false
-    }
-
-    fn query(&self, query: &Query) {
-        let text = query.text.trim();
-        let is_running = running();
-        if is_running {
-            let playing = now_playing().unwrap_or_default();
-            let controls = [
-                control("playpause", "Play / Pause", &playing, "media-playback-start", "PlayPause", 1.03),
-                control("next", "Next track", "", "media-skip-forward", "Next", 1.02),
-                control("previous", "Previous track", "", "media-skip-backward", "Previous", 1.01),
-            ];
-            query.send(
-                controls
-                    .into_iter()
-                    .filter(|item| text.is_empty() || matcher::score(text, &[(&item.title, 1.0)]).is_some())
-                    .collect(),
-            );
-        } else if text.is_empty() {
-            let open = Effect::Spawn { argv: vec!["spotify".into()], cwd: None, id: "spotify".into() };
-            query.send(vec![
-                Item::new("start", "Start Spotify", "", Icon::Theme("spotify".into()))
-                    .action(Action::new("run", "Start", open))
-                    .score(1.0),
-            ]);
-        }
-        if text.is_empty() {
-            return;
-        }
-        if self.client_id.is_empty() {
+impl Spotify {
+    /// Results for `/spotify` or `/queue`, signing in if need be.
+    fn search_results(&self, query: &Query, text: &str, queue: bool) {
+        if self.auth.client_id.is_empty() {
             let subtitle = format!("Create an app with the redirect URI {REDIRECT_URI}, then set [spotify] client_id in ~/.config/genie/config.toml");
             query.send(vec![
                 warning("nocredentials", "Spotify search isn't set up", &subtitle)
@@ -441,13 +452,81 @@ impl Plugin for Spotify {
         if query.cancelled() {
             return;
         }
-        match self.search(text) {
+        match self.auth.search(text, if queue { "track" } else { "track,artist,album,playlist" }) {
+            Ok(items) if queue => query.send(items.into_iter().map(|item| self.queueable(item)).collect()),
             Ok(items) => query.send(items),
-            Err(Failure::SignIn) => match self.start_sign_in() {
+            Err(Failure::SignIn) => match self.auth.start_sign_in() {
                 Ok(()) => query.send(vec![warning("signin", "Signing in to Spotify", "Continue in your browser, then search again")]),
                 Err(error) => query.send(vec![warning("error", "Couldn't start signing in to Spotify", &error)]),
             },
             Err(Failure::Other(error)) => query.send(vec![warning("error", "Spotify search failed", &error)]),
+        }
+    }
+
+    /// Enter adds it to the queue, and playing moves to Alt's list.
+    fn queueable(&self, mut item: Item) -> Item {
+        let (auth, uri, title) = (self.auth.clone(), item.id.clone(), item.title.clone());
+        let queue = Effect::Call(Arc::new(move || auth.add_to_queue(&uri, &title)));
+        item.actions.insert(0, Action::new("queue", "Add to the queue, or play it", queue));
+        item
+    }
+}
+
+impl Plugin for Spotify {
+    fn id(&self) -> &'static str {
+        "spotify"
+    }
+
+    fn group(&self) -> &'static str {
+        "Spotify"
+    }
+
+    fn commands(&self) -> Vec<LauncherCommand> {
+        vec![
+            LauncherCommand::new("spotify", &["sp", "play"], "Control the music, or search and play", "spotify"),
+            LauncherCommand::new("queue", &[], "Search songs, and queue one or play it if nothing is playing", "media-playlist-append"),
+            LauncherCommand::new("pause", &[], "Play or pause the music", "media-playback-pause"),
+            LauncherCommand::new("next", &[], "Skip to the next track", "media-skip-forward"),
+            LauncherCommand::new("previous", &[], "Back to the previous track", "media-skip-backward"),
+        ]
+    }
+
+    fn query(&self, query: &Query) {
+        let text = query.text.trim();
+        match query.command.as_deref() {
+            Some("pause") => query.send(vec![control("playpause", "Play / Pause", &now_playing().unwrap_or_default(), "media-playback-start", "PlayPause", 1.0)]),
+            Some("next") => query.send(vec![control("next", "Next track", &now_playing().unwrap_or_default(), "media-skip-forward", "Next", 1.0)]),
+            Some("previous") => query.send(vec![control("previous", "Previous track", &now_playing().unwrap_or_default(), "media-skip-backward", "Previous", 1.0)]),
+            Some("queue") if text.is_empty() => {
+                query.send(vec![Item::new("queue.hint", "Add to the queue", "Type a song's name", Icon::Theme("media-playlist-append".into())).completion("/queue ")]);
+            }
+            Some("queue") => self.search_results(query, text, true),
+            _ => {
+                if running() {
+                    let playing = now_playing().unwrap_or_default();
+                    let controls = [
+                        control("playpause", "Play / Pause", &playing, "media-playback-start", "PlayPause", 1.03),
+                        control("next", "Next track", "", "media-skip-forward", "Next", 1.02),
+                        control("previous", "Previous track", "", "media-skip-backward", "Previous", 1.01),
+                    ];
+                    query.send(
+                        controls
+                            .into_iter()
+                            .filter(|item| text.is_empty() || matcher::score(text, &[(&item.title, 1.0)]).is_some())
+                            .collect(),
+                    );
+                } else if text.is_empty() {
+                    let open = Effect::Spawn { argv: vec!["spotify".into()], cwd: None, id: "spotify".into() };
+                    query.send(vec![
+                        Item::new("start", "Start Spotify", "", Icon::Theme("spotify".into()))
+                            .action(Action::new("run", "Start", open))
+                            .score(1.0),
+                    ]);
+                }
+                if !text.is_empty() {
+                    self.search_results(query, text, false);
+                }
+            }
         }
     }
 }
@@ -472,6 +551,7 @@ mod tests {
         let url = authorize_url("id", "ch", "st");
         assert!(url.starts_with("https://accounts.spotify.com/authorize?response_type=code&client_id=id&"));
         assert!(url.contains("redirect_uri=http%3A%2F%2F127%2E0%2E0%2E1%3A47813%2Fcallback"));
+        assert!(url.contains("scope=user%2Dmodify%2Dplayback%2Dstate"));
         assert!(url.contains("code_challenge_method=S256&code_challenge=ch&state=st"));
         assert!(!url.contains(char::is_whitespace));
     }
@@ -515,6 +595,14 @@ mod tests {
         assert_eq!(items[0].icon, Icon::Url("small".into()));
         assert_eq!(items[1].icon, Icon::Theme("spotify".into()));
         assert!(items[0].score > items[1].score);
+    }
+
+    #[test]
+    fn only_stopped_counts_as_stopped() {
+        assert!(is_stopped(r#"{"type":"s","data":"Stopped"}"#));
+        assert!(!is_stopped(r#"{"type":"s","data":"Paused"}"#));
+        assert!(!is_stopped(r#"{"type":"s","data":"Playing"}"#));
+        assert!(!is_stopped("garbage"));
     }
 
     #[test]
