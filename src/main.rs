@@ -188,6 +188,7 @@ struct ListWindow {
     renderer: egui_wgpu::Renderer,
     ctx: egui::Context,
     input: WaylandToEguiInput,
+    modifiers: egui::Modifiers,
     icons: icons::Icons,
     list: CommandList,
     size: (u32, u32),
@@ -197,6 +198,7 @@ struct ListWindow {
 }
 
 struct Daemon {
+    modifiers: egui::Modifiers,
     app: Application,
     gpu: Gpu,
     windows: windows::Windows,
@@ -253,6 +255,7 @@ fn daemon() {
     connect_repaint(&ctx, &repaint_at, &events);
     let renderer = gpu.renderer();
     let mut daemon = Daemon {
+        modifiers: egui::Modifiers::NONE,
         app,
         gpu,
         windows,
@@ -272,6 +275,17 @@ fn daemon() {
     };
     log::info!("ready");
     daemon.run(&incoming);
+}
+
+/// wayapp keeps track of the modifiers but doesn't tell egui, which only knows
+/// them from this event: without it, Alt never reads as held.
+fn with_modifiers(mut raw: egui::RawInput, modifiers: egui::Modifiers) -> egui::RawInput {
+    raw.events.insert(0, egui::Event::ModifiersChanged(modifiers));
+    raw
+}
+
+fn to_egui(modifiers: &smithay_client_toolkit::seat::keyboard::Modifiers) -> egui::Modifiers {
+    egui::Modifiers { alt: modifiers.alt, ctrl: modifiers.ctrl, shift: modifiers.shift, mac_cmd: false, command: modifiers.ctrl }
 }
 
 fn connect_repaint(ctx: &egui::Context, repaint_at: &Arc<Mutex<Option<Instant>>>, events: &Sender<Event>) {
@@ -456,6 +470,7 @@ impl Daemon {
             }
             WaylandEvent::ModifiersChanged(modifiers) => {
                 self.input.update_modifiers(&modifiers);
+                self.modifiers = to_egui(&modifiers);
                 self.dirty = true;
             }
             WaylandEvent::PointerEvent((surface, position, kind)) => {
@@ -492,6 +507,7 @@ impl Daemon {
             renderer: self.gpu.renderer(),
             ctx,
             input: WaylandToEguiInput::new(clipboard),
+            modifiers: egui::Modifiers::NONE,
             icons: icons::Icons::new(self.events.clone(), icons::Window::CommandList),
             list: CommandList::new(self.launcher.runner.groups()),
             size: (width, height),
@@ -530,7 +546,10 @@ impl Daemon {
             WaylandEvent::KeyPress(key) => list.input.handle_keyboard_event(&key, true, false),
             WaylandEvent::KeyRelease(key) => list.input.handle_keyboard_event(&key, false, false),
             WaylandEvent::KeyRepeat(key) => list.input.handle_keyboard_event(&key, true, true),
-            WaylandEvent::ModifiersChanged(modifiers) => list.input.update_modifiers(&modifiers),
+            WaylandEvent::ModifiersChanged(modifiers) => {
+                list.input.update_modifiers(&modifiers);
+                list.modifiers = to_egui(&modifiers);
+            }
             WaylandEvent::PointerEvent((surface, position, kind)) => {
                 list.input.handle_pointer_event(&smithay_client_toolkit::seat::pointer::PointerEvent { surface, position, kind });
             }
@@ -545,7 +564,7 @@ impl Daemon {
             return;
         }
         list.input.set_screen_size(list.size.0, list.size.1);
-        let raw = list.input.take_raw_input();
+        let raw = with_modifiers(list.input.take_raw_input(), list.modifiers);
         list.ctx.set_pixels_per_point(list.scale as f32);
         let mut outcome = None;
         let (commands, icons) = (&mut list.list, &mut list.icons);
@@ -575,7 +594,7 @@ impl Daemon {
         }
         let (width, height) = launcher::surface_size();
         self.input.set_screen_size(width, height);
-        let raw = self.input.take_raw_input();
+        let raw = with_modifiers(self.input.take_raw_input(), self.modifiers);
         self.ctx.set_pixels_per_point(self.scale as f32);
         let mut requests = Vec::new();
         let mut panel = None;
@@ -637,5 +656,27 @@ impl Daemon {
             }
         }
         self.hide();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn egui_sees_alt_held_and_released() {
+        let ctx = egui::Context::default();
+        let held = |modifiers| {
+            let mut alt = false;
+            let mut output = ctx.run_ui(with_modifiers(egui::RawInput::default(), modifiers), |ui| {
+                alt = ui.ctx().input(|i| i.modifiers.alt);
+            });
+            output.textures_delta.clear();
+            alt
+        };
+        assert!(!held(egui::Modifiers::NONE));
+        assert!(held(egui::Modifiers::ALT));
+        assert!(held(egui::Modifiers::ALT), "still held on a frame with no key event");
+        assert!(!held(egui::Modifiers::NONE));
     }
 }

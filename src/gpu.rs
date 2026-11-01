@@ -135,7 +135,7 @@ impl Gpu {
     }
 
     /// Draws a frame, which also commits the wl_surface. Size in pixels.
-    pub fn render(&self, renderer: &mut Renderer, target: &mut Target, ctx: &egui::Context, output: egui::FullOutput, size: (u32, u32)) -> bool {
+    pub fn render(&self, renderer: &mut Renderer, target: &mut Target, ctx: &egui::Context, mut output: egui::FullOutput, size: (u32, u32)) -> bool {
         let screen = ScreenDescriptor { size_in_pixels: [size.0, size.1], pixels_per_point: output.pixels_per_point };
         // Textures must reach the renderer even if this frame doesn't.
         for (id, deltas) in &output.textures_delta.set {
@@ -174,6 +174,7 @@ impl Gpu {
         for id in &output.textures_delta.free {
             renderer.free_texture(id);
         }
+        output.textures_delta.clear();
         presented
     }
 }
