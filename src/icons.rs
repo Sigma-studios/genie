@@ -54,7 +54,10 @@ impl Icons {
                     continue;
                 }
                 let image = match &icon {
-                    Icon::Theme(name) => index.find(name).and_then(|path| load_file(&path)),
+                    Icon::Theme(name) => match embedded(name) {
+                        Some(svg) => render_svg(svg),
+                        None => index.find(name).and_then(|path| load_file(&path)),
+                    },
                     Icon::File(path) => load_file(path),
                     Icon::Url(_) => None,
                 };
@@ -94,6 +97,24 @@ impl Icons {
 }
 
 const GENERIC: &str = "application-x-executable";
+
+/// Logos no icon theme has, built in.
+fn embedded(name: &str) -> Option<&'static [u8]> {
+    let svg: &[u8] = match name {
+        "genie-amazon" => include_bytes!("../assets/icons/amazon.svg"),
+        "genie-ebay" => include_bytes!("../assets/icons/ebay.svg"),
+        "genie-ecosia" => include_bytes!("../assets/icons/ecosia.svg"),
+        "genie-github" => include_bytes!("../assets/icons/github.svg"),
+        "genie-googlemaps" => include_bytes!("../assets/icons/googlemaps.svg"),
+        "genie-googlescholar" => include_bytes!("../assets/icons/googlescholar.svg"),
+        "genie-googletranslate" => include_bytes!("../assets/icons/googletranslate.svg"),
+        "genie-spotify" => include_bytes!("../assets/icons/spotify.svg"),
+        "genie-wolfram" => include_bytes!("../assets/icons/wolfram.svg"),
+        "genie-youtube" => include_bytes!("../assets/icons/youtube.svg"),
+        _ => return None,
+    };
+    Some(svg)
+}
 
 /// Icon names to files, across the themes and pixmaps. Walked once.
 struct ThemeIndex(HashMap<String, PathBuf>);
@@ -238,6 +259,16 @@ mod tests {
         assert_eq!(found["a"].2, Path::new("/first/16x16/apps/a.png"));
         add(&mut found, 0, Path::new("/first/16x16/apps/b.txt"));
         assert!(!found.contains_key("b"));
+    }
+
+    #[test]
+    fn every_engine_has_a_logo_that_renders() {
+        for engine in crate::config::Config::default().websearch {
+            let name = engine.icon.expect("an icon");
+            let svg = embedded(&name).unwrap_or_else(|| panic!("no logo for {name}"));
+            let image = render_svg(svg).unwrap_or_else(|| panic!("{name} doesn't render"));
+            assert!(image.pixels.iter().any(|pixel| pixel.a() > 0), "{name} is blank");
+        }
     }
 
     #[test]

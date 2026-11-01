@@ -3,7 +3,7 @@
 A fast application launcher for Wayland, in Rust. It stays resident, opens in a
 few milliseconds, and draws with egui on a layer surface.
 
-Type to search apps, then files, then Google, in that order. `folder/name` and `~/path` list
+Type to search apps, then files, then Ecosia, in that order. `folder/name` and `~/path` list
 what's in there, and Tab goes one level down. Everything else is a command:
 `/` lists them, and the list narrows as you type.
 
@@ -15,12 +15,12 @@ what's in there, and Tab goes one level down. Everything else is a command:
 | `/queue name` | Search songs, and queue one, or play it if nothing is playing |
 | `/pause`, `/next`, `/previous` | Control the player |
 | `/list` | Opens a window with every command, by group, and a search bar |
-| `/power` | Shut down, restart, log out, lock |
-| `/maps`, `/youtube` (`/yt`), `/github` (`/gh`), `/gpt`, `/google` (`/gg`)… | Web searches |
+| `/shutdown`, `/restart`, `/logout`, `/lock` | What they say, asking first except to lock: Enter twice. `/power` lists them |
+| `/ecosia` (`/ec`), `/maps`, `/youtube` (`/yt`), `/github` (`/gh`), `/amazon`… | Web searches |
 
-Enter runs the selected result, and an app that's open comes forward rather than starting
-again. Alt lists the other actions, New window among them (Alt+Up/Down, Alt+Enter), and Tab
-completes. Up on the first result walks back through past queries. Escape or
+Enter or a click runs a result, and an app that's open comes forward rather than starting
+again. Alt+Enter or Alt+click runs its second action: New window, for an app. Alt+Down lists
+them all. Tab completes. Up on the first result walks back through past queries. Escape or
 clicking elsewhere hides.
 
 ## Running
@@ -50,7 +50,7 @@ whole list; the defaults are in `src/config.rs`.
     command = "duckduckgo"
     alias = "dd"
     url = "https://duckduckgo.com/?q=%s"
-    # In the regular search, instead of Google.
+    # In the regular search, instead of Ecosia.
     regular = true
 
 `/spotify` controls the player as is. Searching and `/queue` need an app from

@@ -39,6 +39,8 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+/// Built in: no icon theme has it.
+const ICON: &str = "genie-spotify";
 const BUS: &str = "org.mpris.MediaPlayer2.spotify";
 const OBJECT: &str = "/org/mpris/MediaPlayer2";
 const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
@@ -356,7 +358,7 @@ fn parse_results(answer: &Value) -> Vec<Item> {
                 .as_array()
                 .and_then(|images| images.last())
                 .and_then(|image| image["url"].as_str())
-                .map_or_else(|| Icon::Theme("spotify".into()), |url| Icon::Url(url.to_string()));
+                .map_or_else(|| Icon::Theme(ICON.into()), |url| Icon::Url(url.to_string()));
             let play = uri.to_string();
             let link = format!("https://open.spotify.com/{}", uri.trim_start_matches("spotify:").replace(':', "/"));
             items.push(
@@ -483,7 +485,7 @@ impl Plugin for Spotify {
 
     fn commands(&self) -> Vec<LauncherCommand> {
         vec![
-            LauncherCommand::new("spotify", &["sp", "play"], "Control the music, or search and play", "spotify"),
+            LauncherCommand::new("spotify", &["sp", "play"], "Control the music, or search and play", ICON),
             LauncherCommand::new("queue", &[], "Search songs, and queue one or play it if nothing is playing", "media-playlist-append"),
             LauncherCommand::new("pause", &[], "Play or pause the music", "media-playback-pause"),
             LauncherCommand::new("next", &[], "Skip to the next track", "media-skip-forward"),
@@ -518,7 +520,7 @@ impl Plugin for Spotify {
                 } else if text.is_empty() {
                     let open = Effect::Spawn { argv: vec!["spotify".into()], cwd: None, id: "spotify".into() };
                     query.send(vec![
-                        Item::new("start", "Start Spotify", "", Icon::Theme("spotify".into()))
+                        Item::new("start", "Start Spotify", "", Icon::Theme(ICON.into()))
                             .action(Action::new("run", "Start", open))
                             .score(1.0),
                     ]);
@@ -593,7 +595,7 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].subtitle, "Track · A, B · Disc");
         assert_eq!(items[0].icon, Icon::Url("small".into()));
-        assert_eq!(items[1].icon, Icon::Theme("spotify".into()));
+        assert_eq!(items[1].icon, Icon::Theme(ICON.into()));
         assert!(items[0].score > items[1].score);
     }
 

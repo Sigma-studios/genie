@@ -45,9 +45,14 @@ pub struct Engine {
 #[derive(Deserialize, Clone)]
 pub struct PowerEntry {
     pub id: String,
+    /// `/this` runs it.
+    pub name: String,
     pub title: String,
     pub icon: String,
     pub command: Vec<String>,
+    /// Asks before running it.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 impl Default for Config {
@@ -95,44 +100,45 @@ fn xdg_dir(variable: &str, fallback: &str) -> PathBuf {
 
 /// The ids are Albert's, so usage history imported from it still applies.
 fn engines() -> Vec<Engine> {
-    let engine = |id: &str, name: &str, command: &str, alias: &str, url: &str| Engine {
+    let engine = |id: &str, name: &str, command: &str, alias: &str, url: &str, icon: &str| Engine {
         id: id.into(),
         name: name.into(),
         command: command.into(),
         alias: Some(alias.to_string()).filter(|a| a != command),
         url: url.into(),
-        regular: command == "google",
-        icon: None,
+        regular: command == "ecosia",
+        icon: Some(format!("genie-{icon}")),
     };
     vec![
-        engine("247c2e7e", "Amazon", "amazon", "ama", "https://www.amazon.com/s/?field-keywords=%s"),
-        engine("c51c2a67", "ChatGPT", "gpt", "gpt", "https://chat.openai.com/?q=%s"),
-        engine("4962f117", "DuckDuckGo", "duckduckgo", "dd", "https://duckduckgo.com/?q=%s"),
-        engine("bdf36e73", "eBay", "ebay", "eb", "https://www.ebay.com/sch/i.html?_nkw=%s"),
-        engine("7f41c049", "GitHub", "github", "gh", "https://github.com/search?utf8=✓&q=%s"),
-        engine("02fb8f09", "Google", "google", "gg", "https://www.google.com/search?q=%s"),
-        engine("48998825", "Google Maps", "maps", "maps", "https://www.google.com/maps/search/%s/"),
-        engine("9498795b", "Google Scholar", "scholar", "scholar", "https://scholar.google.com/scholar?q=%s"),
-        engine("74d48b98", "Google Translate", "translate", "gt", "https://translate.google.com/?text=%s"),
-        engine("2b062a76", "Wolfram Alpha", "wolfram", "wa", "https://www.wolframalpha.com/input/?i=%s"),
-        engine("e7021408", "YouTube", "youtube", "yt", "https://www.youtube.com/results?search_query=%s"),
+        engine("247c2e7e", "Amazon", "amazon", "ama", "https://www.amazon.fr/s?k=%s", "amazon"),
+        engine("bdf36e73", "eBay", "ebay", "eb", "https://www.ebay.com/sch/i.html?_nkw=%s", "ebay"),
+        engine("ecosia", "Ecosia", "ecosia", "ec", "https://www.ecosia.org/search?q=%s", "ecosia"),
+        engine("7f41c049", "GitHub", "github", "gh", "https://github.com/search?utf8=✓&q=%s", "github"),
+        engine("48998825", "Google Maps", "maps", "maps", "https://www.google.com/maps/search/%s/", "googlemaps"),
+        engine("9498795b", "Google Scholar", "scholar", "scholar", "https://scholar.google.com/scholar?q=%s", "googlescholar"),
+        engine("74d48b98", "Google Translate", "translate", "gt", "https://translate.google.com/?sl=auto&tl=fr&text=%s&op=translate", "googletranslate"),
+        engine("2b062a76", "Wolfram Alpha", "wolfram", "wa", "https://www.wolframalpha.com/input/?i=%s", "wolfram"),
+        engine("e7021408", "YouTube", "youtube", "yt", "https://www.youtube.com/results?search_query=%s", "youtube"),
     ]
 }
 
-/// The power menu behind Ctrl+Alt+Delete: `genie show /power` lists them all.
-/// org.kde.Shutdown acts without KDE's prompt.
+/// Each is its own command. Their descriptions all say "Power", so `/power`
+/// lists them, which is the menu behind Ctrl+Alt+Delete. org.kde.Shutdown acts
+/// without KDE's prompt.
 fn power() -> Vec<PowerEntry> {
-    let entry = |id: &str, title: &str, icon: &str, command: &[&str]| PowerEntry {
+    let entry = |id: &str, name: &str, title: &str, icon: &str, command: &[&str]| PowerEntry {
         id: id.into(),
+        name: name.into(),
         title: title.into(),
         icon: icon.into(),
         command: command.iter().map(|s| s.to_string()).collect(),
+        confirm: id != "Lock",
     };
     let shutdown = |method: &'static str| ["qdbus", "org.kde.Shutdown", "/Shutdown", method];
     vec![
-        entry("Poweroff", "Shut down", "system-shutdown", &shutdown("org.kde.Shutdown.logoutAndShutdown")),
-        entry("Reboot", "Restart", "system-reboot", &shutdown("org.kde.Shutdown.logoutAndReboot")),
-        entry("Logout", "Log out", "system-log-out", &shutdown("org.kde.Shutdown.logout")),
-        entry("Lock", "Lock", "system-lock-screen", &["loginctl", "lock-session"]),
+        entry("Poweroff", "shutdown", "Shut down", "system-shutdown", &shutdown("org.kde.Shutdown.logoutAndShutdown")),
+        entry("Reboot", "restart", "Restart", "system-reboot", &shutdown("org.kde.Shutdown.logoutAndReboot")),
+        entry("Logout", "logout", "Log out", "system-log-out", &shutdown("org.kde.Shutdown.logout")),
+        entry("Lock", "lock", "Lock", "system-lock-screen", &["loginctl", "lock-session"]),
     ]
 }

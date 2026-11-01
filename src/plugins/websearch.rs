@@ -1,4 +1,4 @@
-//! `/maps paris` searches Google Maps. Google also comes last in the regular
+//! `/maps paris` searches Google Maps. Ecosia also comes last in the regular
 //! search.
 
 use crate::config::Engine;
@@ -74,6 +74,13 @@ impl Plugin for WebSearch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translate_goes_to_french() {
+        let engines = crate::config::Config::default().websearch;
+        let translate = engines.iter().find(|e| e.command == "translate").unwrap();
+        assert_eq!(url(translate, "good morning"), "https://translate.google.com/?sl=auto&tl=fr&text=good%20morning&op=translate");
+    }
 
     #[test]
     fn queries_are_encoded() {

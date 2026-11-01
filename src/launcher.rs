@@ -56,7 +56,17 @@ pub enum Request {
     Run(Action, Item),
 }
 
+/// An action waiting for a second Enter.
+struct Confirming {
+    question: String,
+    action: Action,
+    item: Item,
+    /// Where the keyboard is. It starts on the action, so Enter twice runs it.
+    on_action: bool,
+}
+
 pub struct Launcher {
+    confirming: Option<Confirming>,
     input: String,
     /// The query the results are for.
     query: String,
@@ -72,6 +82,8 @@ pub struct Launcher {
     stale: bool,
     scroll_to_selected: bool,
     cursor_to_end: bool,
+    /// Alt+Up or Alt+Down opened the selected item's list of actions.
+    actions_open: bool,
     /// Results held back until every plugin has finished.
     held: Vec<Item>,
     /// Enter came before the results: it runs as soon as they're in.
@@ -87,6 +99,7 @@ pub struct Launcher {
 impl Launcher {
     pub fn new(runner: Runner, history: History) -> Self {
         Self {
+            confirming: None,
             input: String::new(),
             query: String::new(),
             items: Vec::new(),
@@ -97,6 +110,7 @@ impl Launcher {
             stale: false,
             scroll_to_selected: false,
             cursor_to_end: false,
+            actions_open: false,
             held: Vec::new(),
             enter_waiting: false,
             selection_moved: false,
@@ -122,6 +136,7 @@ impl Launcher {
     }
 
     fn query_changed(&mut self) {
+        self.confirming = None;
         self.query = self.input.clone();
         let started = self.runner.run(&self.query);
         self.generation = started.generation;
@@ -221,7 +236,11 @@ impl Launcher {
     fn activate(&mut self, action: usize, requests: &mut Vec<Request>) {
         let Some(item) = self.items.get(self.selected) else { return };
         if let Some(run) = item.actions.get(action) {
-            requests.push(Request::Run(run.clone(), item.clone()));
+            if let Some(question) = &run.confirm {
+                self.confirming = Some(Confirming { question: question.clone(), action: run.clone(), item: item.clone(), on_action: true });
+            } else {
+                requests.push(Request::Run(run.clone(), item.clone()));
+            }
         } else if let Some(completion) = &item.completion {
             let completion = completion.clone();
             self.set_input(completion);
@@ -230,25 +249,102 @@ impl Launcher {
 
     pub fn activate_selected(&mut self) -> Vec<Request> {
         let mut requests = Vec::new();
-        self.activate(0, &mut requests);
+        if self.confirming.is_some() {
+            self.answer(&mut requests);
+        } else {
+            self.activate(0, &mut requests);
+        }
         requests
     }
 
+    /// Enter in the question, on whichever button the keyboard is.
+    fn answer(&mut self, requests: &mut Vec<Request>) {
+        if let Some(confirming) = self.confirming.take()
+            && confirming.on_action
+        {
+            requests.push(Request::Run(confirming.action, confirming.item));
+        }
+    }
+
+    fn confirm_keys(&mut self, ctx: &egui::Context, requests: &mut Vec<Request>) {
+        let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
+        if pressed(Modifiers::NONE, Key::Escape) {
+            self.confirming = None;
+            return;
+        }
+        let moved = pressed(Modifiers::NONE, Key::ArrowLeft)
+            | pressed(Modifiers::NONE, Key::ArrowRight)
+            | pressed(Modifiers::NONE, Key::Tab)
+            | pressed(Modifiers::SHIFT, Key::Tab);
+        if moved && let Some(confirming) = &mut self.confirming {
+            confirming.on_action = !confirming.on_action;
+        }
+        // A real press: holding Enter from the first one mustn't answer.
+        let enter = ctx.input(|i| {
+            i.events.iter().any(|event| matches!(event, egui::Event::Key { key: Key::Enter, pressed: true, repeat: false, .. }))
+        });
+        pressed(Modifiers::NONE, Key::Enter);
+        if enter {
+            self.answer(requests);
+        }
+    }
+
+    fn draw_confirm(&mut self, ui: &mut egui::Ui, requests: &mut Vec<Request>) {
+        let Some(confirming) = &mut self.confirming else { return };
+        let width = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, INPUT_HEIGHT), Sense::hover());
+        let question = galley(ui, &confirming.question, INPUT_FONT, TEXT, width - INPUT_PADDING * 2.0);
+        ui.painter().galley(egui::pos2(rect.left() + INPUT_PADDING + 4.0, rect.center().y - question.size().y / 2.0), question, TEXT);
+        let (row, _) = ui.allocate_exact_size(Vec2::new(width, ROW_HEIGHT), Sense::hover());
+        let half = (width - ROW_SPACING) / 2.0;
+        let cancel = Rect::from_min_size(row.min, Vec2::new(half, ROW_HEIGHT));
+        let run = Rect::from_min_size(row.min + Vec2::new(half + ROW_SPACING, 0.0), Vec2::new(half, ROW_HEIGHT));
+        let mut clicked = None;
+        for (rect, label, is_action) in [(cancel, "Cancel", false), (run, confirming.action.label.as_str(), true)] {
+            let response = ui.interact(rect, ui.scope_id().with(is_action), Sense::click());
+            let fill = if confirming.on_action == is_action {
+                SELECTION
+            } else if response.hovered() {
+                Color32::from_white_alpha(10)
+            } else {
+                INPUT
+            };
+            ui.painter().rect_filled(rect, CornerRadius::same(11), fill);
+            let text = galley(ui, label, TITLE_FONT, TEXT, rect.width());
+            ui.painter().galley(rect.center() - text.size() / 2.0, text, TEXT);
+            if response.clicked() {
+                clicked = Some(is_action);
+            }
+        }
+        if let Some(is_action) = clicked {
+            confirming.on_action = is_action;
+            self.answer(requests);
+        }
+    }
+
     fn keys(&mut self, ctx: &egui::Context, requests: &mut Vec<Request>) {
+        if self.confirming.is_some() {
+            return self.confirm_keys(ctx, requests);
+        }
         let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
         if pressed(Modifiers::NONE, Key::Escape) {
             requests.push(Request::Hide);
         }
-        // Alt lists the selected item's actions, and these move through them.
+        // Alt+Enter runs the second action, like Alt+click: New window, for an app.
+        // Alt+Up or Alt+Down opens the whole list, starting on that same action.
         let actions = self.items.get(self.selected).map_or(0, |i| i.actions.len());
-        if pressed(Modifiers::ALT, Key::ArrowDown) {
+        let down = pressed(Modifiers::ALT, Key::ArrowDown);
+        let up = pressed(Modifiers::ALT, Key::ArrowUp);
+        if (down || up) && !self.actions_open {
+            self.actions_open = true;
+            self.action = second_action(actions);
+        } else if down {
             self.action = (self.action + 1).min(actions.saturating_sub(1));
-        }
-        if pressed(Modifiers::ALT, Key::ArrowUp) {
+        } else if up {
             self.action = self.action.saturating_sub(1);
         }
         if pressed(Modifiers::ALT, Key::Enter) {
-            let action = self.action;
+            let action = if self.actions_open { self.action } else { second_action(actions) };
             self.activate(action, requests);
         }
         if pressed(Modifiers::NONE, Key::Enter) {
@@ -296,6 +392,10 @@ impl Launcher {
         let mut requests = Vec::new();
         self.keys(&ctx, &mut requests);
         let alt = ctx.input(|i| i.modifiers.alt);
+        if !alt {
+            self.actions_open = false;
+            self.action = 0;
+        }
 
         let frame = egui::Frame::new()
             .fill(WINDOW)
@@ -308,12 +408,16 @@ impl Launcher {
         let panel = frame.show(ui, |ui| {
             ui.set_width(WIDTH - PADDING * 2.0 - 2.0);
             ui.spacing_mut().item_spacing = Vec2::new(0.0, SPACING);
+            if self.confirming.is_some() {
+                self.draw_confirm(ui, &mut requests);
+                return;
+            }
             self.draw_input(ui);
             if !self.items.is_empty() {
-                if alt {
+                if self.actions_open {
                     self.draw_actions(ui, &mut requests);
                 } else {
-                    self.draw_rows(ui, icons, &mut requests);
+                    self.draw_rows(ui, icons, alt, &mut requests);
                 }
             }
         });
@@ -348,7 +452,7 @@ impl Launcher {
         }
     }
 
-    fn draw_rows(&mut self, ui: &mut egui::Ui, icons: &mut Icons, requests: &mut Vec<Request>) {
+    fn draw_rows(&mut self, ui: &mut egui::Ui, icons: &mut Icons, alt: bool, requests: &mut Vec<Request>) {
         let height = VISIBLE_ROWS as f32 * ROW_HEIGHT + (VISIBLE_ROWS - 1) as f32 * ROW_SPACING;
         let scroll_to = std::mem::take(&mut self.scroll_to_selected);
         let mut clicked = None;
@@ -380,10 +484,14 @@ impl Launcher {
                     let left = icon_rect.right() + ICON_GAP;
                     let width = rect.right() - ROW_PADDING - left;
                     let title = galley(ui, &item.title, TITLE_FONT, TEXT, width);
-                    if item.subtitle.is_empty() {
+                    // Holding Alt: what Alt+Enter would do, in place of the usual text.
+                    let hint = (alt && selected && item.actions.len() > 1)
+                        .then(|| format!("Alt+Enter: {}  ·  Alt+Down: all actions", item.actions[second_action(item.actions.len())].label));
+                    let subtitle = hint.as_deref().unwrap_or(&item.subtitle);
+                    if subtitle.is_empty() {
                         ui.painter().galley(egui::pos2(left, rect.center().y - title.size().y / 2.0), title, TEXT);
                     } else {
-                        let subtitle = galley(ui, &item.subtitle, SUBTITLE_FONT, SUBTEXT, width);
+                        let subtitle = galley(ui, subtitle, SUBTITLE_FONT, SUBTEXT, width);
                         let total = title.size().y + subtitle.size().y;
                         let top = rect.center().y - total / 2.0;
                         let below = top + title.size().y;
@@ -397,7 +505,8 @@ impl Launcher {
             });
         if let Some(index) = clicked {
             self.select(index);
-            self.activate(0, requests);
+            let actions = self.items[index].actions.len();
+            self.activate(if alt { second_action(actions) } else { 0 }, requests);
         }
     }
 
@@ -421,6 +530,11 @@ impl Launcher {
             self.activate(index, requests);
         }
     }
+}
+
+/// What Alt runs: the second action, or the only one.
+fn second_action(actions: usize) -> usize {
+    if actions > 1 { 1 } else { 0 }
 }
 
 /// By tier, then best first.
@@ -509,6 +623,47 @@ mod tests {
         launcher.finished(generation);
         assert_eq!(ids(&launcher), ["google"]);
         assert!(!launcher.stale);
+    }
+
+    fn asking(launcher: &mut Launcher) -> Vec<Request> {
+        launcher.set_input("/shutdown".into());
+        let generation = launcher.generation;
+        let run = Action::new("run", "Shut down", crate::plugin::Effect::Open("x".into())).confirm("Shut down?");
+        launcher.results(generation, vec![item("shutdown", 0).action(run)]);
+        launcher.activate_selected()
+    }
+
+    #[test]
+    fn the_first_enter_only_asks_and_the_second_runs() {
+        let mut launcher = launcher();
+        assert!(asking(&mut launcher).is_empty());
+        assert!(launcher.confirming.as_ref().unwrap().on_action);
+        assert!(matches!(launcher.activate_selected().as_slice(), [Request::Run(..)]));
+        assert!(launcher.confirming.is_none());
+    }
+
+    #[test]
+    fn cancel_runs_nothing() {
+        let mut launcher = launcher();
+        asking(&mut launcher);
+        launcher.confirming.as_mut().unwrap().on_action = false;
+        assert!(launcher.activate_selected().is_empty());
+        assert!(launcher.confirming.is_none());
+    }
+
+    #[test]
+    fn hiding_forgets_the_question() {
+        let mut launcher = launcher();
+        asking(&mut launcher);
+        launcher.reset();
+        assert!(launcher.confirming.is_none());
+    }
+
+    #[test]
+    fn alt_runs_the_second_action_when_there_is_one() {
+        assert_eq!(second_action(0), 0);
+        assert_eq!(second_action(1), 0);
+        assert_eq!(second_action(3), 1);
     }
 
     #[test]

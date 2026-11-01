@@ -1,7 +1,7 @@
 //! What a plugin is. Plugins are compiled in: each one turns a query into
 //! items, on its own thread, and sends them as they come.
 //!
-//! Typing without a slash is the regular search: apps, then files, then Google.
+//! Typing without a slash is the regular search: apps, then files, then the web.
 //! Everything else is a command: `/` lists them, `/maps paris` runs one.
 
 use crate::Event;
@@ -40,11 +40,18 @@ pub struct Action {
     pub id: String,
     pub label: String,
     pub effect: Effect,
+    /// Asked first, for what's hard to undo.
+    pub confirm: Option<String>,
 }
 
 impl Action {
     pub fn new(id: &str, label: &str, effect: Effect) -> Self {
-        Self { id: id.into(), label: label.into(), effect }
+        Self { id: id.into(), label: label.into(), effect, confirm: None }
+    }
+
+    pub fn confirm(mut self, question: impl Into<String>) -> Self {
+        self.confirm = Some(question.into());
+        self
     }
 }
 
@@ -138,6 +145,8 @@ pub struct Command {
     pub aliases: Vec<String>,
     pub description: String,
     pub icon: String,
+    /// Enter on it in a list of commands runs this, rather than completing it.
+    pub action: Option<Action>,
 }
 
 impl Command {
@@ -147,7 +156,13 @@ impl Command {
             aliases: aliases.iter().map(|a| a.to_string()).collect(),
             description: description.into(),
             icon: icon.into(),
+            action: None,
         }
+    }
+
+    pub fn action(mut self, action: Action) -> Self {
+        self.action = Some(action);
+        self
     }
 
     fn answers_to(&self, name: &str) -> bool {
@@ -180,7 +195,7 @@ pub trait Plugin: Send + Sync {
 
 /// What was started for a query. `items` are there right away: the list of
 /// commands needs no plugin.
-/// Items of this tier wait for every plugin to finish: Google answers at
+/// Items of this tier wait for every plugin to finish: the web search answers at
 /// once and files take a moment, and it shouldn't be selected in between.
 pub const LAST_TIER: u8 = 2;
 
@@ -344,6 +359,10 @@ fn list_commands<'a>(commands: impl Iterator<Item = &'a Command>, typed: &str) -
             .completion(format!("/{} ", command.name))
             .score(score + order);
             item.plugin = "commands";
+            if let Some(action) = &command.action {
+                item.completion = None;
+                item.actions = vec![action.clone()];
+            }
             Some(item)
         })
         .collect()
