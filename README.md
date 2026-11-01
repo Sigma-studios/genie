@@ -53,6 +53,16 @@ whole list; the defaults are in `src/config.rs`.
     # In the regular search, instead of Ecosia.
     regular = true
 
+`~/.config/genie/commands.toml`, also optional, adds your own commands. Génie doesn't
+bind `shortcut`: it's shown beside the command, for a key you've bound elsewhere.
+
+    [[command]]
+    name = "record-start"
+    title = "Recording: start"
+    icon = "media-record"
+    command = ["gsr-start"]
+    shortcut = "Ctrl+Alt+Home"
+
 `/spotify` controls the player as is. Searching and `/queue` need an app from
 [Spotify's dashboard](https://developer.spotify.com/dashboard) whose redirect URI is
 `http://127.0.0.1:47813/callback`. Adding to the queue also takes Spotify Premium. The first search opens a tab to sign in, with

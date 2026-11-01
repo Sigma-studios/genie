@@ -112,7 +112,7 @@ impl CommandList {
                         let left = icon_rect.right() + 10.0;
                         let width = rect.right() - left - 8.0;
                         let name = launcher::galley(ui, &title(command), NAME_FONT, launcher::TEXT, width);
-                        let description = launcher::galley(ui, &command.description, DESCRIPTION_FONT, launcher::SUBTEXT, width);
+                        let description = launcher::galley(ui, &command.detail(), DESCRIPTION_FONT, launcher::SUBTEXT, width);
                         let top = rect.center().y - (name.size().y + description.size().y) / 2.0;
                         let below = top + name.size().y;
                         ui.painter().galley(egui::pos2(left, top), name, launcher::TEXT);

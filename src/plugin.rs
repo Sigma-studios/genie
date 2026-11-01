@@ -147,6 +147,8 @@ pub struct Command {
     pub icon: String,
     /// Enter on it in a list of commands runs this, rather than completing it.
     pub action: Option<Action>,
+    /// A key that also runs it, to show beside it.
+    pub shortcut: Option<String>,
 }
 
 impl Command {
@@ -157,12 +159,26 @@ impl Command {
             description: description.into(),
             icon: icon.into(),
             action: None,
+            shortcut: None,
         }
     }
 
     pub fn action(mut self, action: Action) -> Self {
         self.action = Some(action);
         self
+    }
+
+    pub fn shortcut(mut self, shortcut: &str) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    /// The line under its name.
+    pub fn detail(&self) -> String {
+        match &self.shortcut {
+            Some(shortcut) => format!("{}  ·  {shortcut}", self.description),
+            None => self.description.clone(),
+        }
     }
 
     fn answers_to(&self, name: &str) -> bool {
@@ -353,7 +369,7 @@ fn list_commands<'a>(commands: impl Iterator<Item = &'a Command>, typed: &str) -
             let mut item = Item::new(
                 format!("/{}", command.name),
                 format!("/{}", command.name),
-                &command.description,
+                command.detail(),
                 Icon::Theme(command.icon.clone()),
             )
             .completion(format!("/{} ", command.name))

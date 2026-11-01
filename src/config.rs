@@ -55,6 +55,39 @@ pub struct PowerEntry {
     pub confirm: bool,
 }
 
+#[derive(Deserialize, Clone)]
+pub struct CustomCommand {
+    /// `/this` runs it.
+    pub name: String,
+    pub title: String,
+    pub icon: String,
+    pub command: Vec<String>,
+    /// Shown beside it, for a key bound elsewhere. Génie doesn't bind it.
+    #[serde(default)]
+    pub shortcut: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CustomCommands {
+    command: Vec<CustomCommand>,
+}
+
+/// ~/.config/genie/commands.toml, apart from config.toml so that one can be
+/// generated while the other stays yours to edit.
+pub fn load_commands() -> Vec<CustomCommand> {
+    let path = config_home().join("genie/commands.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    match toml::from_str::<CustomCommands>(&text) {
+        Ok(commands) => commands.command,
+        Err(e) => {
+            log::warn!("{}: {e}", path.display());
+            Vec::new()
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -96,6 +129,33 @@ pub fn home() -> PathBuf {
 fn xdg_dir(variable: &str, fallback: &str) -> PathBuf {
     // Set but empty counts as unset, says the XDG spec.
     std::env::var_os(variable).filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home().join(fallback))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_commands_parse_with_and_without_a_shortcut() {
+        let text = r#"
+            [[command]]
+            name = "record-start"
+            title = "Recording: start"
+            icon = "media-record"
+            command = ["gsr-start"]
+            shortcut = "Ctrl+Alt+Home"
+
+            [[command]]
+            name = "hello"
+            title = "Hello"
+            icon = "face-smile"
+            command = ["notify-send", "hello"]
+        "#;
+        let commands = toml::from_str::<CustomCommands>(text).unwrap().command;
+        assert_eq!(commands[0].shortcut.as_deref(), Some("Ctrl+Alt+Home"));
+        assert_eq!(commands[1].shortcut, None);
+        assert_eq!(commands[1].command, ["notify-send", "hello"]);
+    }
 }
 
 /// The ids are Albert's, so usage history imported from it still applies.
