@@ -7,6 +7,9 @@
 //! by a search, the rest by listing one level at a time. A query starting with
 //! / or ~ is a real path and is listed from the filesystem. Tab on a folder
 //! completes it with a slash, to go one level down.
+//!
+//! Without the trigger, a plain name of three letters or more also lists files,
+//! after every other result.
 
 use crate::config;
 use crate::plugin::Action;
@@ -32,6 +35,8 @@ const LIMIT: usize = 40;
 const ANCHORS: usize = 20;
 /// Entries asked for per listed folder.
 const LISTING: usize = 5000;
+/// Fewer letters than this match too much to be worth listing untriggered.
+const UNTRIGGERED_MINIMUM: usize = 3;
 
 pub struct Files;
 
@@ -310,12 +315,18 @@ impl Plugin for Files {
         vec!["f ".into()]
     }
 
-    fn global(&self) -> bool {
-        false
-    }
-
     fn query(&self, query: &Query) {
         let text = query.text.trim();
+        if query.trigger.is_none() {
+            if text.chars().count() < UNTRIGGERED_MINIMUM || text.contains('/') || text.starts_with('~') {
+                return;
+            }
+            // Nothing to say if the daemon's down: this wasn't asked for.
+            if let Ok(hits) = search(text) {
+                query.send(hits.into_iter().enumerate().map(|(i, h)| make_item(h, "", i).background()).collect());
+            }
+            return;
+        }
         let typed = text.rsplit_once('/').map_or(String::new(), |(base, _)| format!("{base}/"));
         let hits = if text.starts_with(['/', '~']) {
             Ok(list_real(text))

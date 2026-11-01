@@ -6,7 +6,7 @@ few milliseconds, and draws with egui on a layer surface.
 | Type | To get |
 |---|---|
 | a name | Apps, by name and keywords, and the power entries |
-| `f name`, `f folder/name`, `f ~/path` | Files, through [répertoire](https://github.com/Sigma-studios/repertoire) |
+| `f name`, `f folder/name`, `f ~/path` | Files, through [répertoire](https://github.com/Sigma-studios/repertoire). A plain name also lists them after other results |
 | `zd name` | Zed's recent workspaces |
 | `sp`, `sp name` | Spotify's controls, and search |
 | `gg`, `yt`, `gh`, `dd`, `maps`, `gpt`… then a query | Web searches. Some are offered when nothing else matched |

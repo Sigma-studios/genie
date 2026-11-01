@@ -54,6 +54,9 @@ pub struct Item {
     /// What Tab puts in the input.
     pub completion: Option<String>,
     pub score: f32,
+    /// Listed after everything else, whatever the score, and doesn't count as
+    /// a match when deciding to offer fallbacks.
+    pub background: bool,
 }
 
 impl Item {
@@ -67,6 +70,7 @@ impl Item {
             actions: Vec::new(),
             completion: None,
             score: 0.0,
+            background: false,
         }
     }
 
@@ -77,6 +81,11 @@ impl Item {
 
     pub fn score(mut self, score: f32) -> Self {
         self.score = score;
+        self
+    }
+
+    pub fn background(mut self) -> Self {
+        self.background = true;
         self
     }
 

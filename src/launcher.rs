@@ -139,7 +139,7 @@ impl Launcher {
             self.scroll_to_selected = true;
         }
         self.items.extend(items);
-        self.items.sort_by(|a, b| b.score.total_cmp(&a.score));
+        sort(&mut self.items);
         if let Some((plugin, id)) = selected {
             self.selected = self.items.iter().position(|i| i.plugin == plugin && i.id == id).unwrap_or(0);
         }
@@ -150,10 +150,18 @@ impl Launcher {
             return;
         }
         self.pending = self.pending.saturating_sub(1);
-        if self.pending == 0 && self.stale {
-            self.items = self.runner.fallbacks(&self.query);
-            self.selected = 0;
+        if self.pending != 0 {
+            return;
+        }
+        if self.stale {
+            self.items.clear();
             self.stale = false;
+        }
+        // Files in the background match almost anything, so they don't count.
+        if self.items.iter().all(|item| item.background) {
+            self.items.extend(self.runner.fallbacks(&self.query));
+            sort(&mut self.items);
+            self.select(0);
         }
     }
 
@@ -385,6 +393,11 @@ impl Launcher {
             self.activate(index, requests);
         }
     }
+}
+
+/// Best first, background items last. Stable, so fallbacks keep their order.
+fn sort(items: &mut [Item]) {
+    items.sort_by(|a, b| a.background.cmp(&b.background).then(b.score.total_cmp(&a.score)));
 }
 
 /// One line, cut with an ellipsis when too long.
