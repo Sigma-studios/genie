@@ -13,7 +13,7 @@ what's in there, and Tab goes one level down. Everything else is a command:
 | `/zed name` (`/zd`) | Zed's recent workspaces |
 | `/spotify` (`/sp`, `/play`), `/spotify name` | Spotify's controls, and search |
 | `/queue name` | Search songs, and queue one, or play it if nothing is playing |
-| `/pause`, `/next`, `/previous` | Control the player |
+| `/pause`, `/next`, `/previous`, `/track-restart` | Control the player |
 | `/list` | Opens a window with every command, by group, and a search bar |
 | `/shutdown`, `/restart`, `/logout`, `/lock` | What they say, asking first except to lock: Enter twice. `/power` lists them |
 | `/ecosia` (`/ec`), `/maps`, `/youtube` (`/yt`), `/github` (`/gh`), `/amazon`… | Web searches |

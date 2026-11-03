@@ -433,6 +433,30 @@ fn describe(status: &str, metadata: &Value) -> Option<String> {
     Some(format!("{status} · {title} · {artists}"))
 }
 
+/// Back to 0:00. `SetPosition` wants the track's id, which older Spotify
+/// builds give as `spotify:track:…`, not an object path busctl will send:
+/// then seeking far back, which MPRIS stops at the start.
+fn restart_track() {
+    let track = busctl(&["-j", "get-property", BUS, OBJECT, PLAYER, "Metadata"]).and_then(|answer| track_id(&answer));
+    if track.is_some_and(|track| busctl(&["call", BUS, OBJECT, PLAYER, "SetPosition", "ox", &track, "0"]).is_some()) {
+        return;
+    }
+    busctl(&["call", BUS, OBJECT, PLAYER, "Seek", "x", "-86400000000"]);
+}
+
+/// The current track's object path, from busctl's JSON of `Metadata`.
+fn track_id(answer: &str) -> Option<String> {
+    let metadata: Value = serde_json::from_str(answer).ok()?;
+    let id = metadata["data"]["mpris:trackid"]["data"].as_str()?;
+    id.starts_with('/').then(|| id.to_string())
+}
+
+fn restart(subtitle: &str, score: f32) -> Item {
+    Item::new("restart", "Restart the track", subtitle, Icon::Theme("media-seek-backward".into()))
+        .action(Action::new("run", "Restart the track", Effect::Call(Arc::new(restart_track))))
+        .score(score)
+}
+
 fn control(id: &str, title: &str, subtitle: &str, icon: &str, method: &'static str, score: f32) -> Item {
     Item::new(id, title, subtitle, Icon::Theme(icon.into()))
         .action(Action::new("run", title, Effect::Call(Arc::new(move || player_call(method)))))
@@ -490,6 +514,7 @@ impl Plugin for Spotify {
             LauncherCommand::new("pause", &[], "Play or pause the music", "media-playback-pause"),
             LauncherCommand::new("next", &[], "Skip to the next track", "media-skip-forward"),
             LauncherCommand::new("previous", &[], "Back to the previous track", "media-skip-backward"),
+            LauncherCommand::new("track-restart", &[], "Play the track again from the start", "media-seek-backward"),
         ]
     }
 
@@ -499,6 +524,7 @@ impl Plugin for Spotify {
             Some("pause") => query.send(vec![control("playpause", "Play / Pause", &now_playing().unwrap_or_default(), "media-playback-start", "PlayPause", 1.0)]),
             Some("next") => query.send(vec![control("next", "Next track", &now_playing().unwrap_or_default(), "media-skip-forward", "Next", 1.0)]),
             Some("previous") => query.send(vec![control("previous", "Previous track", &now_playing().unwrap_or_default(), "media-skip-backward", "Previous", 1.0)]),
+            Some("track-restart") => query.send(vec![restart(&now_playing().unwrap_or_default(), 1.0)]),
             Some("queue") if text.is_empty() => {
                 query.send(vec![Item::new("queue.hint", "Add to the queue", "Type a song's name", Icon::Theme("media-playlist-append".into())).completion("/queue ")]);
             }
@@ -510,6 +536,7 @@ impl Plugin for Spotify {
                         control("playpause", "Play / Pause", &playing, "media-playback-start", "PlayPause", 1.03),
                         control("next", "Next track", "", "media-skip-forward", "Next", 1.02),
                         control("previous", "Previous track", "", "media-skip-backward", "Previous", 1.01),
+                        restart("", 1.005),
                     ];
                     query.send(
                         controls
@@ -605,6 +632,15 @@ mod tests {
         assert!(!is_stopped(r#"{"type":"s","data":"Paused"}"#));
         assert!(!is_stopped(r#"{"type":"s","data":"Playing"}"#));
         assert!(!is_stopped("garbage"));
+    }
+
+    #[test]
+    fn track_ids_must_be_object_paths() {
+        let answer = |id: &str| json!({"type": "a{sv}", "data": {"mpris:trackid": {"type": "o", "data": id}}}).to_string();
+        assert_eq!(track_id(&answer("/com/spotify/track/abc")).as_deref(), Some("/com/spotify/track/abc"));
+        assert!(track_id(&answer("spotify:track:abc")).is_none());
+        assert!(track_id(r#"{"type":"a{sv}","data":{}}"#).is_none());
+        assert!(track_id("garbage").is_none());
     }
 
     #[test]
