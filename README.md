@@ -15,6 +15,7 @@ what's in there, and Tab goes one level down. Everything else is a command:
 | `/queue name` | Search songs, and queue one, or play it if nothing is playing |
 | `/pause`, `/next`, `/previous`, `/track-restart` | Control the player |
 | `/calc 2*(3+4)` (`/=`), or just `2*(3+4)` | Calculates, and Enter copies the result. Tab puts it in the input to go on |
+| `/kill name` | Your running programs, most memory first. Tab completes, Enter ends one asking first, Alt has forcing it |
 | `/list` | Opens a window with every command, by group, and a search bar |
 | `/shutdown`, `/restart`, `/logout`, `/lock` | What they say, asking first except to lock: Enter twice. `/power` lists them |
 | `/ecosia` (`/ec`), `/maps`, `/youtube` (`/yt`), `/github` (`/gh`), `/amazon`… | Web searches |

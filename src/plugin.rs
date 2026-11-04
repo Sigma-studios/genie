@@ -319,16 +319,22 @@ impl Runner {
         Started { generation: self.generation, pending, items }
     }
 
-    /// Every plugin's commands, under its group, for the command list.
+    /// Every plugin's commands, under its group, for the command list. Plugins
+    /// can share a group: power and `/kill` are both System.
     pub fn groups(&self) -> Vec<(String, Vec<Command>)> {
         let mut groups: Vec<(String, Vec<Command>)> = Vec::new();
         for plugin in &self.plugins {
-            let mut commands = plugin.commands();
+            let commands = plugin.commands();
             if commands.is_empty() {
                 continue;
             }
+            match groups.iter_mut().find(|(group, _)| group == plugin.group()) {
+                Some((_, existing)) => existing.extend(commands),
+                None => groups.push((plugin.group().to_string(), commands)),
+            }
+        }
+        for (_, commands) in &mut groups {
             commands.sort_by(|a, b| a.name.cmp(&b.name));
-            groups.push((plugin.group().to_string(), commands));
         }
         groups
     }
