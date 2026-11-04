@@ -1,4 +1,5 @@
 pub mod apps;
+pub mod calc;
 pub mod custom;
 pub mod files;
 pub mod power;

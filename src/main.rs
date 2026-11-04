@@ -229,6 +229,7 @@ fn daemon() {
         Arc::new(plugins::spotify::Spotify::new(config.spotify)),
         Arc::new(plugins::zed::Zed::new(config.terminal.clone())),
         Arc::new(plugins::power::Power(config.power.clone())),
+        Arc::new(plugins::calc::Calc),
         Arc::new(plugins::custom::Custom(config::load_commands())),
         Arc::new(plugins::websearch::WebSearch(config.websearch.clone())),
     ];

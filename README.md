@@ -3,7 +3,7 @@
 A fast application launcher for Wayland, in Rust. It stays resident, opens in a
 few milliseconds, and draws with egui on a layer surface.
 
-Type to search apps, then files, then Ecosia, in that order. `folder/name` and `~/path` list
+Type to search apps, then files, then Ecosia, in that order. A calculation, like `2*(3+4)`, shows its result on top. `folder/name` and `~/path` list
 what's in there, and Tab goes one level down. Everything else is a command:
 `/` lists them, and the list narrows as you type.
 
@@ -14,6 +14,7 @@ what's in there, and Tab goes one level down. Everything else is a command:
 | `/spotify` (`/sp`, `/play`), `/spotify name` | Spotify's controls, and search |
 | `/queue name` | Search songs, and queue one, or play it if nothing is playing |
 | `/pause`, `/next`, `/previous`, `/track-restart` | Control the player |
+| `/calc 2*(3+4)` (`/=`), or just `2*(3+4)` | Calculates, and Enter copies the result. Tab puts it in the input to go on |
 | `/list` | Opens a window with every command, by group, and a search bar |
 | `/shutdown`, `/restart`, `/logout`, `/lock` | What they say, asking first except to lock: Enter twice. `/power` lists them |
 | `/ecosia` (`/ec`), `/maps`, `/youtube` (`/yt`), `/github` (`/gh`), `/amazon`… | Web searches |
