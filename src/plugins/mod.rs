@@ -5,5 +5,6 @@ pub mod files;
 pub mod power;
 pub mod processes;
 pub mod spotify;
+pub mod url;
 pub mod websearch;
 pub mod zed;

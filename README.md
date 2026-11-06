@@ -3,7 +3,7 @@
 A fast application launcher for Wayland, in Rust. It stays resident, opens in a
 few milliseconds, and draws with egui on a layer surface.
 
-Type to search apps, then files, then Ecosia, in that order. A calculation, like `2*(3+4)`, shows its result on top. `folder/name` and `~/path` list
+Type to search apps, then files, then Ecosia, in that order. A calculation, like `2*(3+4)`, shows its result on top, and a URL, like `github.com` or `localhost:3000`, opens in the browser. `folder/name` and `~/path` list
 what's in there, and Tab goes one level down. Everything else is a command:
 `/` lists them, and the list narrows as you type.
 

@@ -231,6 +231,7 @@ fn daemon() {
         Arc::new(plugins::power::Power(config.power.clone())),
         Arc::new(plugins::processes::Processes),
         Arc::new(plugins::calc::Calc),
+        Arc::new(plugins::url::Url),
         Arc::new(plugins::custom::Custom(config::load_commands())),
         Arc::new(plugins::websearch::WebSearch(config.websearch.clone())),
     ];
