@@ -13,6 +13,7 @@ mod launcher;
 mod matcher;
 mod plugin;
 mod plugins;
+mod repeat;
 mod windows;
 
 use activation::Activation;
@@ -24,6 +25,8 @@ use launcher::Launcher;
 use launcher::Request;
 use plugin::Effect;
 use plugin::Plugin;
+use repeat::Repeat;
+use repeat::Target as RepeatTarget;
 use smithay_client_toolkit::compositor::Region;
 use smithay_clipboard::Clipboard;
 use smithay_client_toolkit::shell::WaylandSurface;
@@ -216,6 +219,7 @@ struct Daemon {
     hidden_on_focus_loss: Option<Instant>,
     repaint_at: Arc<Mutex<Option<Instant>>>,
     dirty: bool,
+    repeat: Repeat,
 }
 
 fn daemon() {
@@ -276,6 +280,7 @@ fn daemon() {
         hidden_on_focus_loss: None,
         repaint_at,
         dirty: false,
+        repeat: Repeat::default(),
     };
     log::info!("ready");
     daemon.run(&incoming);
@@ -321,6 +326,7 @@ impl Daemon {
             for event in first.into_iter().chain(std::iter::from_fn(|| incoming.try_recv().ok())) {
                 self.handle(event);
             }
+            self.repeat_key();
             let due = self.repaint_at.lock().unwrap().is_some_and(|at| at <= Instant::now());
             if self.dirty || due {
                 *self.repaint_at.lock().unwrap() = None;
@@ -331,13 +337,28 @@ impl Daemon {
         }
     }
 
-    /// How long to sleep. Nothing's scheduled while hidden.
+    /// How long to sleep: until the next frame or key repeat. Nothing's
+    /// scheduled while hidden.
     fn next_repaint(&self) -> Option<Duration> {
         if self.shown.is_none() && self.list.is_none() {
             return None;
         }
-        let at = (*self.repaint_at.lock().unwrap())?;
+        let repaint = *self.repaint_at.lock().unwrap();
+        let at = [repaint, self.repeat.next()].into_iter().flatten().min()?;
         Some(at.saturating_duration_since(Instant::now()))
+    }
+
+    /// Sends the held key again when it's due, to the window it was pressed in.
+    fn repeat_key(&mut self) {
+        let Some((key, target)) = self.repeat.due(Instant::now()) else { return };
+        match target {
+            RepeatTarget::Launcher if self.shown.is_some() => self.input.handle_keyboard_event(&key, true, true),
+            RepeatTarget::List if self.list.is_some() => {
+                self.list.as_mut().unwrap().input.handle_keyboard_event(&key, true, true)
+            }
+            _ => return self.repeat.stop(),
+        }
+        self.dirty = true;
     }
 
     fn handle(&mut self, event: Event) {
@@ -419,6 +440,7 @@ impl Daemon {
     fn hide(&mut self) {
         // Swapchain, then surface: the order of Shown's fields.
         if self.shown.take().is_some() {
+            self.repeat.stop();
             self.launcher.reset();
             self.input.handle_keyboard_leave();
             let _ = self.app.conn.flush();
@@ -462,10 +484,12 @@ impl Daemon {
             }
             WaylandEvent::KeyPress(key) => {
                 self.input.handle_keyboard_event(&key, true, false);
+                self.repeat.press(&key, RepeatTarget::Launcher, Instant::now());
                 self.dirty = true;
             }
             WaylandEvent::KeyRelease(key) => {
                 self.input.handle_keyboard_event(&key, false, false);
+                self.repeat.release(&key);
                 self.dirty = true;
             }
             WaylandEvent::KeyRepeat(key) => {
@@ -546,9 +570,16 @@ impl Daemon {
             WaylandEvent::KeyboardLeave(_) => {
                 list.focused = false;
                 list.input.handle_keyboard_leave();
+                self.repeat.stop();
             }
-            WaylandEvent::KeyPress(key) => list.input.handle_keyboard_event(&key, true, false),
-            WaylandEvent::KeyRelease(key) => list.input.handle_keyboard_event(&key, false, false),
+            WaylandEvent::KeyPress(key) => {
+                list.input.handle_keyboard_event(&key, true, false);
+                self.repeat.press(&key, RepeatTarget::List, Instant::now());
+            }
+            WaylandEvent::KeyRelease(key) => {
+                list.input.handle_keyboard_event(&key, false, false);
+                self.repeat.release(&key);
+            }
             WaylandEvent::KeyRepeat(key) => list.input.handle_keyboard_event(&key, true, true),
             WaylandEvent::ModifiersChanged(modifiers) => {
                 list.input.update_modifiers(&modifiers);
