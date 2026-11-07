@@ -56,7 +56,9 @@ whole list; the defaults are in `src/config.rs`.
     regular = true
 
 `~/.config/genie/commands.toml`, also optional, adds your own commands. Génie doesn't
-bind `shortcut`: it's shown beside the command, for a key you've bound elsewhere.
+bind `shortcut`: it's shown beside the command, for a key you've bound elsewhere. With
+`arguments = true`, what's typed after the name goes on the end of `command`:
+`/clip 30` below runs `gsr-replay 30`.
 
     [[command]]
     name = "record-start"
@@ -64,6 +66,13 @@ bind `shortcut`: it's shown beside the command, for a key you've bound elsewhere
     icon = "media-record"
     command = ["gsr-start"]
     shortcut = "Ctrl+Alt+Home"
+
+    [[command]]
+    name = "clip"
+    title = "Recording: save replay"
+    icon = "document-save"
+    command = ["gsr-replay"]
+    arguments = true
 
 `/spotify` controls the player as is. Searching and `/queue` need an app from
 [Spotify's dashboard](https://developer.spotify.com/dashboard) whose redirect URI is

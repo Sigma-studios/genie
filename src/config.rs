@@ -65,6 +65,10 @@ pub struct CustomCommand {
     /// Shown beside it, for a key bound elsewhere. Génie doesn't bind it.
     #[serde(default)]
     pub shortcut: Option<String>,
+    /// Words typed after the name (`/clip 30`) go on the end of `command`.
+    /// Off, they're ignored.
+    #[serde(default)]
+    pub arguments: bool,
 }
 
 #[derive(Deserialize)]
