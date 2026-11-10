@@ -17,7 +17,8 @@ use std::sync::mpsc::Sender;
 
 /// Pixels, for 39 points at scale 2.
 const SIZE: u32 = 78;
-const THEMES: [&str; 4] = ["breeze", "hicolor", "Adwaita", "gnome"];
+/// After the desktop's theme and the ones it inherits from.
+const FALLBACKS: [&str; 4] = ["breeze", "hicolor", "Adwaita", "gnome"];
 
 enum Slot {
     Loading,
@@ -56,7 +57,7 @@ impl Icons {
                 let image = match &icon {
                     Icon::Theme(name) => match embedded(name) {
                         Some(svg) => render_svg(svg),
-                        None => index.find(name).and_then(|path| load_file(&path)),
+                        None => index.find(name).and_then(|path| load_theme_icon(&path)),
                     },
                     Icon::File(path) => load_file(path),
                     Icon::Url(_) => None,
@@ -125,8 +126,7 @@ impl ThemeIndex {
         let dirs: Vec<PathBuf> = std::iter::once(config::data_home())
             .chain(others.split(':').filter(|d| !d.is_empty()).map(PathBuf::from))
             .collect();
-        let mut themes = vec![theme_setting()];
-        themes.extend(THEMES.iter().map(|t| t.to_string()));
+        let themes = themes(&dirs);
         let mut found: HashMap<String, (usize, u32, PathBuf)> = HashMap::new();
         for (rank, theme) in themes.iter().enumerate() {
             for dir in &dirs {
@@ -139,13 +139,57 @@ impl ThemeIndex {
         Self(found.into_iter().map(|(name, (_, _, path))| (name, path)).collect())
     }
 
+    /// The full-colour icon, else its symbolic one: COSMIC's themes have
+    /// many actions (media, save, emotes) only as symbolic.
     fn find(&self, name: &str) -> Option<PathBuf> {
-        self.0.get(name).cloned()
+        self.0.get(name).or_else(|| self.0.get(&format!("{name}-symbolic"))).cloned()
     }
 }
 
-/// Plasma's theme, from kdeglobals, dark by default like the desktop here.
+/// The desktop's theme, then what it inherits (its `index.theme`, depth
+/// first, as the icon theme spec walks it), then the fallbacks.
+fn themes(dirs: &[PathBuf]) -> Vec<String> {
+    themes_from(theme_setting(), dirs)
+}
+
+fn themes_from(theme: String, dirs: &[PathBuf]) -> Vec<String> {
+    let mut themes = Vec::new();
+    let mut stack = vec![theme];
+    while let Some(theme) = stack.pop() {
+        if themes.contains(&theme) {
+            continue;
+        }
+        let parents = dirs.iter().find_map(|dir| inherits(&dir.join("icons").join(&theme).join("index.theme")));
+        themes.push(theme);
+        stack.extend(parents.unwrap_or_default().into_iter().rev());
+    }
+    for theme in FALLBACKS {
+        if !themes.iter().any(|t| t == theme) {
+            themes.push(theme.into());
+        }
+    }
+    themes
+}
+
+fn inherits(index: &Path) -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(index).ok()?;
+    let line = text.lines().find_map(|line| line.strip_prefix("Inherits="))?;
+    Some(line.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect())
+}
+
+/// COSMIC's theme (its toolkit's `icon_theme`, "Cosmic" unless changed),
+/// else Plasma's from kdeglobals, else Breeze dark.
 fn theme_setting() -> String {
+    let cosmic = config::config_home().join("cosmic/com.system76.CosmicTk/v1/icon_theme");
+    if let Ok(text) = std::fs::read_to_string(cosmic) {
+        let theme = text.trim().trim_matches('"');
+        if !theme.is_empty() {
+            return theme.into();
+        }
+    }
+    if std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.split(':').any(|d| d.eq_ignore_ascii_case("COSMIC"))) {
+        return "Cosmic".into();
+    }
     let text = std::fs::read_to_string(config::config_home().join("kdeglobals")).unwrap_or_default();
     let mut in_icons = false;
     for line in text.lines() {
@@ -193,6 +237,22 @@ fn size_in_path(path: &Path) -> u32 {
         .filter_map(|c| c.split(['x', '@']).next()?.parse().ok())
         .max()
         .unwrap_or(1)
+}
+
+/// A symbolic icon is a dark shape meant to be recoloured: drawn in the
+/// text colour, so it shows on the dark window.
+fn load_theme_icon(path: &Path) -> Option<ColorImage> {
+    let mut image = load_file(path)?;
+    if path.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.ends_with("-symbolic")) {
+        tint(&mut image, crate::launcher::TEXT);
+    }
+    Some(image)
+}
+
+fn tint(image: &mut ColorImage, color: egui::Color32) {
+    for pixel in &mut image.pixels {
+        *pixel = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), pixel.a());
+    }
 }
 
 fn load_file(path: &Path) -> Option<ColorImage> {
@@ -269,6 +329,36 @@ mod tests {
             let image = render_svg(svg).unwrap_or_else(|| panic!("{name} doesn't render"));
             assert!(image.pixels.iter().any(|pixel| pixel.a() > 0), "{name} is blank");
         }
+    }
+
+    #[test]
+    fn symbolic_icons_stand_in_and_take_the_text_colour() {
+        let mut found = HashMap::new();
+        add(&mut found, 0, Path::new("/i/scalable/actions/media-record-symbolic.svg"));
+        add(&mut found, 0, Path::new("/i/scalable/actions/system-shutdown.svg"));
+        add(&mut found, 0, Path::new("/i/scalable/actions/system-shutdown-symbolic.svg"));
+        let index = ThemeIndex(found.into_iter().map(|(name, (_, _, path))| (name, path)).collect());
+        assert_eq!(index.find("media-record").unwrap(), Path::new("/i/scalable/actions/media-record-symbolic.svg"));
+        assert_eq!(index.find("system-shutdown").unwrap(), Path::new("/i/scalable/actions/system-shutdown.svg"));
+
+        let mut image = ColorImage::new([2, 1], vec![egui::Color32::from_black_alpha(255), egui::Color32::TRANSPARENT]);
+        tint(&mut image, crate::launcher::TEXT);
+        assert_eq!(image.pixels[0], crate::launcher::TEXT);
+        assert_eq!(image.pixels[1].a(), 0);
+    }
+
+    #[test]
+    fn a_theme_brings_what_it_inherits_before_the_fallbacks() {
+        let root = std::env::temp_dir().join(format!("genie-themes-{}", std::process::id()));
+        for (theme, parents) in [("Cosmic", "Pop,hicolor"), ("Pop", "Adwaita")] {
+            let dir = root.join("icons").join(theme);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("index.theme"), format!("[Icon Theme]\nInherits={parents}\n")).unwrap();
+        }
+        let themes = themes_from("Cosmic".into(), &[root.clone()]);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(themes[..4], ["Cosmic", "Pop", "Adwaita", "hicolor"]);
+        assert!(themes.iter().any(|t| t == "breeze"));
     }
 
     #[test]
