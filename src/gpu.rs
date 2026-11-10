@@ -123,8 +123,13 @@ impl Gpu {
         match target.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => return Some(texture),
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return None,
-            _ => self.configure(target, target.size),
+            // A suboptimal frame (the window was just resized: the command
+            // list's first configure) has to be let go before reconfiguring,
+            // or wgpu panics. The match would otherwise hold it to its end.
+            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => drop(texture),
+            _ => {}
         }
+        self.configure(target, target.size);
         match target.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
             other => {
