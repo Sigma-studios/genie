@@ -117,6 +117,16 @@ fn embedded(name: &str) -> Option<&'static [u8]> {
     Some(svg)
 }
 
+/// Breeze names Génie uses that COSMIC's themes (Cosmic, Pop, Adwaita) don't
+/// have, and what to show instead. Symbolic, like the media controls beside them.
+fn stand_ins(name: &str) -> &'static [&'static str] {
+    match name {
+        "media-playlist-append" => &["playlist-symbolic", "list-add"],
+        "view-list-details" => &["view-list"],
+        _ => &[],
+    }
+}
+
 /// Icon names to files, across the themes and pixmaps. Walked once.
 struct ThemeIndex(HashMap<String, PathBuf>);
 
@@ -141,8 +151,10 @@ impl ThemeIndex {
 
     /// The full-colour icon, else its symbolic one: COSMIC's themes have
     /// many actions (media, save, emotes) only as symbolic.
+    /// Then a stand-in, for names the desktop's theme lacks.
     fn find(&self, name: &str) -> Option<PathBuf> {
-        self.0.get(name).or_else(|| self.0.get(&format!("{name}-symbolic"))).cloned()
+        let exact = |name: &str| self.0.get(name).or_else(|| self.0.get(&format!("{name}-symbolic"))).cloned();
+        exact(name).or_else(|| stand_ins(name).iter().find_map(|name| exact(name)))
     }
 }
 
@@ -340,11 +352,23 @@ mod tests {
         let index = ThemeIndex(found.into_iter().map(|(name, (_, _, path))| (name, path)).collect());
         assert_eq!(index.find("media-record").unwrap(), Path::new("/i/scalable/actions/media-record-symbolic.svg"));
         assert_eq!(index.find("system-shutdown").unwrap(), Path::new("/i/scalable/actions/system-shutdown.svg"));
+        assert_eq!(index.find("media-playlist-append"), None);
 
         let mut image = ColorImage::new([2, 1], vec![egui::Color32::from_black_alpha(255), egui::Color32::TRANSPARENT]);
         tint(&mut image, crate::launcher::TEXT);
         assert_eq!(image.pixels[0], crate::launcher::TEXT);
         assert_eq!(image.pixels[1].a(), 0);
+    }
+
+    #[test]
+    fn missing_names_take_a_stand_in() {
+        let mut found = HashMap::new();
+        add(&mut found, 0, Path::new("/i/scalable/mimetypes/playlist.svg"));
+        add(&mut found, 0, Path::new("/i/scalable/mimetypes/playlist-symbolic.svg"));
+        add(&mut found, 0, Path::new("/i/scalable/actions/view-list-symbolic.svg"));
+        let index = ThemeIndex(found.into_iter().map(|(name, (_, _, path))| (name, path)).collect());
+        assert_eq!(index.find("media-playlist-append").unwrap(), Path::new("/i/scalable/mimetypes/playlist-symbolic.svg"));
+        assert_eq!(index.find("view-list-details").unwrap(), Path::new("/i/scalable/actions/view-list-symbolic.svg"));
     }
 
     #[test]
