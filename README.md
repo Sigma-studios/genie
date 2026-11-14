@@ -15,6 +15,7 @@ what's in there, and Tab goes one level down. Everything else is a command:
 | `/queue name` | Search songs, and queue one, or play it if nothing is playing |
 | `/pause`, `/next`, `/previous`, `/track-restart` | Control the player |
 | `/calc 2*(3+4)` (`/=`), or just `2*(3+4)` | Calculates, and Enter copies the result. Tab puts it in the input to go on |
+| `/layout fr` (`/kb`) | Switches the keyboard layout, among those set up in Plasma or COSMIC. `/layout` alone has the next one on top |
 | `/kill name` | Your running programs, most memory first. Tab completes, Enter ends one asking first, Alt has forcing it |
 | `/list` | Opens a window with every command, by group, and a search bar |
 | `/shutdown`, `/restart`, `/logout`, `/lock` | What they say, asking first except to lock: Enter twice. `/power` lists them |
@@ -22,7 +23,7 @@ what's in there, and Tab goes one level down. Everything else is a command:
 
 Enter or a click runs a result, and an app that's open comes forward rather than starting
 again. Alt+Enter or Alt+click runs its second action: New window, for an app. Alt+Down lists
-them all. Tab completes. Up on the first result walks back through past queries. Escape or
+them all. Tab, or Right at the end of the input, completes: `/a` Right gives `/amazon `. Up on the first result walks back through past queries. Escape or
 clicking elsewhere hides.
 
 ## Running

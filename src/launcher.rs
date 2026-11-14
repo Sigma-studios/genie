@@ -82,6 +82,8 @@ pub struct Launcher {
     stale: bool,
     scroll_to_selected: bool,
     cursor_to_end: bool,
+    /// The input's widget, to know where its cursor is.
+    input_id: Option<egui::Id>,
     /// Alt+Up or Alt+Down opened the selected item's list of actions.
     actions_open: bool,
     /// Results held back until every plugin has finished.
@@ -110,6 +112,7 @@ impl Launcher {
             stale: false,
             scroll_to_selected: false,
             cursor_to_end: false,
+            input_id: None,
             actions_open: false,
             held: Vec::new(),
             enter_waiting: false,
@@ -378,11 +381,28 @@ impl Launcher {
         if pressed(Modifiers::NONE, Key::PageUp) {
             self.step(-(VISIBLE_ROWS as isize));
         }
-        if pressed(Modifiers::NONE, Key::Tab)
-            && let Some(completion) = self.items.get(self.selected).and_then(|i| i.completion.clone())
+        let completion = self.items.get(self.selected).and_then(|i| i.completion.clone());
+        if let Some(completion) = completion.clone()
+            && pressed(Modifiers::NONE, Key::Tab)
         {
             self.set_input(completion);
         }
+        // Right at the end of the input does what Tab does, `/a` → `/amazon `.
+        // Anywhere else it moves the cursor, so it's only taken when it completes.
+        if let Some(completion) = completion.filter(|c| *c != self.input)
+            && self.cursor_at_end(ctx)
+            && pressed(Modifiers::NONE, Key::ArrowRight)
+        {
+            self.set_input(completion);
+        }
+    }
+
+    /// Nothing selected and nothing after the cursor.
+    fn cursor_at_end(&self, ctx: &egui::Context) -> bool {
+        let Some(range) = self.input_id.and_then(|id| egui::TextEdit::load_state(ctx, id)).and_then(|s| s.cursor.char_range()) else {
+            return true;
+        };
+        range.is_empty() && range.primary == CCursor::new(self.input.chars().count())
     }
 
     /// Draws a frame. Returns what to do, and where the panel is: everything
@@ -438,6 +458,7 @@ impl Launcher {
             .margin(Vec2::ZERO)
             .lock_focus(true);
         let response = ui.put(inner, edit);
+        self.input_id = Some(response.id);
         response.request_focus();
         if response.changed() {
             self.recall = None;

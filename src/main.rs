@@ -234,6 +234,7 @@ fn daemon() {
         Arc::new(plugins::zed::Zed::new(config.terminal.clone())),
         Arc::new(plugins::power::Power(config.power.clone())),
         Arc::new(plugins::processes::Processes),
+        Arc::new(plugins::layout::Layout),
         Arc::new(plugins::calc::Calc),
         Arc::new(plugins::url::Url),
         Arc::new(plugins::custom::Custom(config::load_commands())),

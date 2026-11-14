@@ -2,6 +2,7 @@ pub mod apps;
 pub mod calc;
 pub mod custom;
 pub mod files;
+pub mod layout;
 pub mod power;
 pub mod processes;
 pub mod spotify;
