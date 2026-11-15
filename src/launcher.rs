@@ -496,6 +496,7 @@ impl Launcher {
         if self.confirming.is_some() || self.actions_open || self.items.is_empty() {
             self.pointed = None;
             self.card = None;
+            previews.player.follow(&ctx, None, 0);
             return (requests, rects);
         }
         // Moving off the rows and the card gives the card back to the selection.
@@ -506,6 +507,9 @@ impl Launcher {
             }
         }
         self.card = self.draw_card(ui, panel, icons, previews, &mut requests);
+        if self.card.is_none() {
+            previews.player.follow(&ctx, None, 0);
+        }
         rects.extend(self.card);
         (requests, rects)
     }
@@ -527,12 +531,17 @@ impl Launcher {
         ui.painter().rect_filled(well, CornerRadius::same(11), INPUT);
         let ppp = ui.ctx().pixels_per_point();
         let picture = well.shrink(ROW_PADDING);
-        if let Some(shown) = previews.get(ui.ctx(), preview, picture.width() * ppp) {
+        previews.player.follow(ui.ctx(), Some(&preview.path), (picture.width() * ppp) as u32);
+        let video = previews.player.video(ui.ctx());
+        if let Some(shown) = video.or_else(|| previews.get(ui.ctx(), preview, picture.width() * ppp)) {
             let at = previews::fit(picture, shown.size, ppp);
             egui::Image::from_texture(egui::load::SizedTexture::new(shown.texture, at.size())).corner_radius(4).paint_at(ui, at);
         } else if let Some(texture) = icons.get(&item.icon) {
             let at = Rect::from_center_size(well.center(), Vec2::splat(ICON * 2.0));
             ui.painter().image(texture, at, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+        }
+        if let Some(progress) = previews.player.progress() {
+            draw_sound(ui.painter(), well, progress);
         }
 
         let width = side - ROW_PADDING;
@@ -691,6 +700,18 @@ impl Launcher {
             self.activate(index, requests);
         }
     }
+}
+
+/// Over a playing sound's preview: a play mark, and how far along it is,
+/// as Fractale draws it.
+fn draw_sound(painter: &egui::Painter, well: Rect, progress: f32) {
+    let centre = well.left_top() + Vec2::splat(18.0);
+    painter.circle_filled(centre, 12.0, WINDOW.gamma_multiply(0.85));
+    let mark = vec![centre + Vec2::new(-4.0, -6.0), centre + Vec2::new(6.5, 0.0), centre + Vec2::new(-4.0, 6.0)];
+    painter.add(egui::Shape::convex_polygon(mark, TEXT, Stroke::NONE));
+    let bar = Rect::from_min_size(egui::pos2(well.left() + 11.0, well.bottom() - 7.0), Vec2::new(well.width() - 22.0, 3.0));
+    painter.rect_filled(bar, CornerRadius::same(2), BORDER);
+    painter.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * progress.clamp(0.0, 1.0), 3.0)), CornerRadius::same(2), TEXT);
 }
 
 /// What Alt runs: the second action, or the only one.

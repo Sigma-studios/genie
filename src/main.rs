@@ -447,6 +447,7 @@ impl Daemon {
         if self.shown.take().is_some() {
             self.repeat.stop();
             self.launcher.reset();
+            self.previews.player.stop();
             self.input.handle_keyboard_leave();
             let _ = self.app.conn.flush();
         }

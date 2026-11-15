@@ -33,7 +33,7 @@ unicode-normalization = "0.1"
 mime_guess = "2"
 
 # File previews: Fractale's previewers, shared.
-vignette = { git = "https://github.com/Sigma-studios/fractale", rev = "85a4b7fd530da5e0dff5713f9afc4bde9691bd64" }
+vignette = { git = "https://github.com/Sigma-studios/fractale", rev = "ece970d6b7c8dc1320ef2ed01c98d7f3f06aa191" }
 
 # Icons.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

@@ -33,7 +33,10 @@ pointer, shows large in a card beside the list. The previews are
 images, GIFs (animated), PDFs, SVGs, videos, office documents, fonts, sprites, songs,
 and whatever the desktop's thumbnailers know. They're read from and written to the
 shared thumbnail cache, `~/.cache/thumbnails`, so what Fractale or Dolphin made shows
-at once.
+at once. Videos, sounds and Orchestre songs play in the card once it has shown them for
+half a second, whether the pointer or the keyboard brought them there; moving on or
+hiding stops them. Videos need `ffmpeg`, and building needs ALSA's headers
+(`libasound2-dev`).
 
 ## Running
 

@@ -8,6 +8,10 @@
 //! first request, not with Génie. Finished previews become textures within a
 //! per-frame upload budget, and the least recently drawn are dropped above a
 //! memory cap: Génie stays running, so this is what it keeps between shows.
+//!
+//! Videos, sounds and Orchestre songs also play in the card, as they do in
+//! Fractale when the pointer rests on them: here, once the card has shown
+//! the same file for half a second, however it got there.
 
 use crate::Event;
 use crate::plugin::Preview;
@@ -16,6 +20,8 @@ use egui::TextureOptions;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
@@ -26,6 +32,8 @@ use vignette::Rendered;
 use vignette::Request;
 use vignette::Thumbs;
 use vignette::cache::Bucket;
+use vignette::playback::Kind;
+use vignette::playback::Playback;
 
 /// Smooth when shrinking, sharp pixels when enlarging (no blur on small
 /// pictures and pixel art), as in Fractale.
@@ -40,6 +48,9 @@ const MEMORY_CAP: usize = 64 << 20;
 /// Pixels uploaded per frame at most, so a list of arriving previews
 /// doesn't stall a frame.
 const UPLOAD_BUDGET: usize = 2 << 20;
+/// How long the card shows a file before it plays: long enough that
+/// arrowing past a video doesn't start it.
+const PLAY_DELAY: Duration = Duration::from_millis(500);
 
 enum Slot {
     /// Asked for, not back yet.
@@ -68,6 +79,7 @@ pub struct Shown {
 
 pub struct Previews {
     events: Sender<Event>,
+    pub player: Player,
     /// Started on the first request.
     thumbs: Option<Thumbs>,
     slots: HashMap<Key, Slot>,
@@ -84,6 +96,7 @@ pub struct Previews {
 impl Previews {
     pub fn new(events: Sender<Event>) -> Self {
         Self {
+            player: Player::new(events.clone()),
             events,
             thumbs: None,
             slots: HashMap::new(),
@@ -200,6 +213,77 @@ impl Previews {
     }
 }
 
+/// Plays the card's file, if it moves.
+pub struct Player {
+    events: Sender<Event>,
+    /// The card's file, and since when.
+    subject: Option<(PathBuf, Instant)>,
+    playing: Option<Playback>,
+    texture: Option<TextureHandle>,
+}
+
+impl Player {
+    fn new(events: Sender<Event>) -> Self {
+        Self { events, subject: None, playing: None, texture: None }
+    }
+
+    /// Every frame, with the card's file (`None` without a card). A new file
+    /// stops what played; the same one for long enough starts. `pixels` is
+    /// how large a video's frames need to be.
+    pub fn follow(&mut self, ctx: &egui::Context, path: Option<&Path>, pixels: u32) {
+        if self.subject.as_ref().map(|(p, _)| p.as_path()) != path {
+            self.stop();
+            self.subject = path.map(|p| (p.to_path_buf(), Instant::now()));
+        }
+        let Some((path, since)) = &self.subject else { return };
+        if self.playing.is_none() {
+            let Some(kind) = Kind::of(path) else { return };
+            let waited = since.elapsed();
+            if waited < PLAY_DELAY {
+                ctx.request_repaint_after(PLAY_DELAY - waited);
+                return;
+            }
+            let events = self.events.clone();
+            let wake = Arc::new(move || {
+                let _ = events.send(Event::Wake);
+            });
+            self.playing = Some(Playback::start(path.clone(), kind, pixels, wake));
+        }
+        // Videos wake Génie with each frame; sounds don't, and their bar moves.
+        if self.playing.as_ref().is_some_and(|p| p.kind != Kind::Video) {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    /// The video's newest frame, in pixels, once there is one: until then
+    /// the still stays.
+    pub fn video(&mut self, ctx: &egui::Context) -> Option<Shown> {
+        let playing = self.playing.as_ref().filter(|p| p.kind == Kind::Video)?;
+        if let Some(frame) = playing.frame() {
+            let size = [frame.width as usize, frame.height as usize];
+            let image = egui::ColorImage::from_rgba_unmultiplied(size, &frame.rgba);
+            match &mut self.texture {
+                Some(texture) if texture.size() == size => texture.set(image, OPTIONS),
+                _ => self.texture = Some(ctx.load_texture("playing", image, OPTIONS)),
+            }
+        }
+        let texture = self.texture.as_ref()?;
+        Some(Shown { texture: texture.id(), size: texture.size_vec2() })
+    }
+
+    /// How far a sound is, 0 to 1, while one plays.
+    pub fn progress(&self) -> Option<f32> {
+        self.playing.as_ref().filter(|p| p.kind != Kind::Video)?.progress()
+    }
+
+    /// Silence, when the card goes or Génie hides.
+    pub fn stop(&mut self) {
+        self.subject = None;
+        self.playing = None;
+        self.texture = None;
+    }
+}
+
 fn key(preview: &Preview, pixels: f32) -> Key {
     Key { path: preview.path.clone(), mtime: preview.mtime, bucket: Bucket::for_pixels(pixels) }
 }
@@ -260,6 +344,27 @@ mod tests {
         assert_eq!(wide.center(), rect.center());
         let small = fit(rect, egui::vec2(40.0, 20.0), 2.0);
         assert_eq!(small.size(), egui::vec2(20.0, 10.0), "not enlarged");
+    }
+
+    #[test]
+    fn plays_only_once_the_card_stays_on_a_file() {
+        let (events, _) = std::sync::mpsc::channel();
+        let mut player = Player::new(events);
+        let ctx = egui::Context::default();
+        let song = Path::new("/nowhere/a.mp3");
+        player.follow(&ctx, Some(song), 100);
+        let since = player.subject.as_ref().unwrap().1;
+        player.follow(&ctx, Some(song), 100);
+        assert!(player.playing.is_none(), "not before half a second");
+        assert_eq!(player.subject.as_ref().unwrap().1, since, "the same file keeps its wait");
+        player.follow(&ctx, Some(Path::new("/nowhere/b.mp3")), 100);
+        assert_eq!(player.subject.as_ref().unwrap().0, Path::new("/nowhere/b.mp3"), "another file waits afresh");
+        player.follow(&ctx, None, 0);
+        assert!(player.subject.is_none() && player.playing.is_none());
+        player.follow(&ctx, Some(Path::new("/nowhere/a.png")), 100);
+        player.subject.as_mut().unwrap().1 -= PLAY_DELAY;
+        player.follow(&ctx, Some(Path::new("/nowhere/a.png")), 100);
+        assert!(player.playing.is_none(), "pictures don't play");
     }
 
     #[test]
