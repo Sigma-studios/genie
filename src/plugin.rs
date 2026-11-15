@@ -20,6 +20,16 @@ pub enum Icon {
     Url(String),
 }
 
+/// A file whose preview stands in for the icon, and shows large beside the
+/// list: the same previews as Fractale's, through the shared thumbnail cache.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Preview {
+    pub path: PathBuf,
+    /// Seconds, as the thumbnail cache records it.
+    pub mtime: i64,
+    pub size: u64,
+}
+
 #[derive(Clone)]
 pub enum Effect {
     /// Start a program, in its own scope. `id` names that scope.
@@ -64,6 +74,7 @@ pub struct Item {
     pub title: String,
     pub subtitle: String,
     pub icon: Icon,
+    pub preview: Option<Preview>,
     /// Enter runs the first action. Holding Alt lists them all.
     pub actions: Vec<Action>,
     /// What Tab puts in the input.
@@ -82,6 +93,7 @@ impl Item {
             title: title.into(),
             subtitle: subtitle.into(),
             icon,
+            preview: None,
             actions: Vec::new(),
             completion: None,
             score: 0.0,
@@ -101,6 +113,11 @@ impl Item {
 
     pub fn tier(mut self, tier: u8) -> Self {
         self.tier = tier;
+        self
+    }
+
+    pub fn preview(mut self, preview: Option<Preview>) -> Self {
+        self.preview = preview;
         self
     }
 

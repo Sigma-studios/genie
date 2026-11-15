@@ -26,6 +26,14 @@ again. Alt+Enter or Alt+click runs its second action: New window, for an app. Al
 them all. Tab, or Right at the end of the input, completes: `/a` Right gives `/amazon `. Up on the first result walks back through past queries. Escape or
 clicking elsewhere hides.
 
+Files show their preview as their icon, and the selected one, or the one under the
+pointer, shows large in a card beside the list. The previews are
+[Fractale](https://github.com/Sigma-studios/fractale)'s, from its `vignette` crate:
+images, GIFs (animated), PDFs, SVGs, videos, office documents, fonts, sprites, songs,
+and whatever the desktop's thumbnailers know. They're read from and written to the
+shared thumbnail cache, `~/.cache/thumbnails`, so what Fractale or Dolphin made shows
+at once.
+
 ## Running
 
     genie                    # the daemon
@@ -90,8 +98,8 @@ KWin (and most compositors) treat `wlr-layer-shell` as the way to have a launche
 anchors means centred on the active screen, and the `Overlay` layer stays above
 everything. Each show creates a surface and a swapchain, while the GPU device, egui's
 textures and the plugins stay alive, which is what makes showing fast. The surface is
-larger than the panel, for the shadow, with an input region so clicks there pass
-through. A program started from Génie gets an XDG activation token, requested while
+larger than the panel, for the shadow and room for the preview card on either side so
+the panel stays centred, with an input region so clicks around them pass through. A program started from Génie gets an XDG activation token, requested while
 the surface still has focus, and its own systemd scope.
 
 Plugins are compiled in (`src/plugin.rs`). Each query runs on one thread per plugin

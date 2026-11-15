@@ -13,6 +13,7 @@ mod launcher;
 mod matcher;
 mod plugin;
 mod plugins;
+mod previews;
 mod repeat;
 mod windows;
 
@@ -178,7 +179,8 @@ struct Shown {
     target: Target,
     layer: LayerSurface,
     configured: bool,
-    panel: Option<egui::Rect>,
+    /// The panel and the card: where clicks land.
+    panel: Vec<egui::Rect>,
     show_requested: Instant,
     first_frame: bool,
 }
@@ -213,6 +215,7 @@ struct Daemon {
     input: WaylandToEguiInput,
     launcher: Launcher,
     icons: icons::Icons,
+    previews: previews::Previews,
     shown: Option<Shown>,
     /// The last scale we were told, to start the next surface sharp.
     scale: i32,
@@ -276,6 +279,7 @@ fn daemon() {
         input,
         launcher: Launcher::new(plugin::Runner::new(plugins, events.clone()), history::History::open()),
         icons: icons::Icons::new(events.clone(), icons::Window::Launcher),
+        previews: previews::Previews::new(events.clone()),
         shown: None,
         scale: 1,
         hidden_on_focus_loss: None,
@@ -427,7 +431,7 @@ impl Daemon {
                 target,
                 layer,
                 configured: false,
-                panel: None,
+                panel: Vec::new(),
                 show_requested: Instant::now(),
                 first_frame: true,
             });
@@ -633,25 +637,24 @@ impl Daemon {
         let raw = with_modifiers(self.input.take_raw_input(), self.modifiers);
         self.ctx.set_pixels_per_point(self.scale as f32);
         let mut requests = Vec::new();
-        let mut panel = None;
-        let (launcher, icons) = (&mut self.launcher, &mut self.icons);
+        let mut panel = Vec::new();
+        let (launcher, icons, previews) = (&mut self.launcher, &mut self.icons, &mut self.previews);
         let output = self.ctx.run_ui(raw, |ui| {
-            let (asked, rect) = launcher.draw(ui, icons);
-            requests = asked;
-            panel = Some(rect);
+            (requests, panel) = launcher.draw(ui, icons, previews);
+            previews.end_frame(ui.ctx());
         });
         for command in &output.platform_output.commands {
             self.input.handle_output_command(command);
         }
         let Some(shown) = &mut self.shown else { return };
-        if let Some(rect) = panel
-            && shown.panel != Some(rect)
-        {
-            shown.panel = Some(rect);
+        if shown.panel != panel {
             if let Ok(region) = Region::new(&self.app.compositor_state) {
-                region.add(rect.left() as i32, rect.top() as i32, rect.width().ceil() as i32, rect.height().ceil() as i32);
+                for rect in &panel {
+                    region.add(rect.left() as i32, rect.top() as i32, rect.width().ceil() as i32, rect.height().ceil() as i32);
+                }
                 shown.layer.wl_surface().set_input_region(Some(region.wl_region()));
             }
+            shown.panel = panel;
         }
         let scale = self.scale as u32;
         let presented = self.gpu.render(&mut self.renderer, &mut shown.target, &self.ctx, output, (width * scale, height * scale));

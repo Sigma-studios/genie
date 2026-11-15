@@ -19,6 +19,7 @@ use crate::plugin::Effect;
 use crate::plugin::Icon;
 use crate::plugin::Item;
 use crate::plugin::Plugin;
+use crate::plugin::Preview;
 use crate::plugin::Query;
 use base64::Engine;
 use serde_json::Value;
@@ -27,6 +28,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
@@ -303,6 +305,13 @@ fn file_icon(path: &str, kind: &str) -> Icon {
     Icon::Theme(name)
 }
 
+/// What the preview is made from, read here, off the UI thread. Folders
+/// have none.
+fn preview(path: &str) -> Option<Preview> {
+    let metadata = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+    Some(Preview { path: path.into(), mtime: metadata.mtime(), size: metadata.len() })
+}
+
 /// `command` is what Tab keeps in front of the path, like `/files `.
 fn make_item(hit: Hit, command: &str, typed: &str, position: usize) -> Item {
     let dir = hit.kind == "dir";
@@ -313,7 +322,9 @@ fn make_item(hit: Hit, command: &str, typed: &str, position: usize) -> Item {
     let mut item = Item::new(&hit.path, format!("{name}{slash}"), subtitle, file_icon(&hit.path, &hit.kind))
         .action(Action::new("open", "Open", Effect::Open(hit.path.clone())));
     if !dir {
-        item = item.action(Action::new("folder", "Open the containing folder", Effect::Open(parent)));
+        item = item
+            .action(Action::new("folder", "Open the containing folder", Effect::Open(parent)))
+            .preview(preview(&hit.path));
     }
     // Keeps the daemon's order among results of the same rank.
     item.action(Action::new("copy", "Copy the path", Effect::Copy(hit.path)))
@@ -411,6 +422,20 @@ mod tests {
         assert_eq!(human(2048), "2 KiB");
         assert_eq!(file_icon("/x/a.pdf", "file"), Icon::Theme("application-pdf".into()));
         assert_eq!(file_icon("/x/a", "dir"), Icon::Theme("folder".into()));
+    }
+
+    #[test]
+    fn files_have_a_preview_and_folders_dont() {
+        let dir = std::env::temp_dir().join(format!("genie-preview-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.png");
+        std::fs::write(&file, b"12345").unwrap();
+        let found = preview(file.to_str().unwrap()).unwrap();
+        assert_eq!((found.path, found.size), (file.clone(), 5));
+        assert!(found.mtime > 0);
+        assert_eq!(preview(dir.to_str().unwrap()), None);
+        assert_eq!(preview("/no/such/file"), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

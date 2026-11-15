@@ -135,7 +135,9 @@ impl CommandList {
             .id_salt("search")
             .font(FontId::proportional(SEARCH_FONT))
             .text_color(launcher::TEXT)
-            .hint_text(egui::RichText::new("Search commands").color(launcher::SUBTEXT))
+            // Sized like the text, as in the launcher: egui would use its body size.
+            .hint_text(egui::RichText::new("Search commands").size(SEARCH_FONT).color(launcher::SUBTEXT))
+            .align(egui::Align2::LEFT_CENTER)
             .frame(egui::Frame::NONE)
             .desired_width(rect.width() - 20.0)
             .margin(Vec2::ZERO)

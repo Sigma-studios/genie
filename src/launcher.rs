@@ -7,6 +7,8 @@ use crate::plugin::Action;
 use crate::plugin::Item;
 use crate::plugin::LAST_TIER;
 use crate::plugin::Runner;
+use crate::previews;
+use crate::previews::Previews;
 use egui::Color32;
 use egui::CornerRadius;
 use egui::FontId;
@@ -23,6 +25,16 @@ use egui::text::TextWrapping;
 
 pub const WIDTH: f32 = 640.0;
 pub const SHADOW: f32 = 80.0;
+/// The card beside the list with the file's preview, like Spotlight's.
+const CARD_WIDTH: f32 = 270.0;
+const CARD_GAP: f32 = 8.0;
+/// The card's shadow is smaller than the panel's, to need less room.
+const CARD_SHADOW: f32 = 40.0;
+/// Room on each side of the panel: the card's on the right, and as much on
+/// the left, so the panel stays in the middle of the screen whether or not
+/// the card shows. 1276 points wide in all, under the 1280 of a laptop at
+/// scale 2.
+const SIDE: f32 = CARD_GAP + CARD_WIDTH + CARD_SHADOW;
 const PADDING: f32 = 7.0;
 const SPACING: f32 = 7.0;
 const INPUT_FONT: f32 = 19.0 * 4.0 / 3.0;
@@ -45,10 +57,14 @@ pub const SELECTION: Color32 = Color32::from_rgb(0x1f, 0x4e, 0x68);
 pub const TEXT: Color32 = Color32::from_rgb(0xfc, 0xfc, 0xfc);
 pub const SUBTEXT: Color32 = Color32::from_rgb(0xa1, 0xa9, 0xb1);
 
-pub fn surface_size() -> (u32, u32) {
+/// The panel at its tallest, with every row showing.
+fn panel_height() -> f32 {
     let rows = VISIBLE_ROWS as f32 * ROW_HEIGHT + (VISIBLE_ROWS - 1) as f32 * ROW_SPACING;
-    let panel = PADDING + INPUT_HEIGHT + SPACING + rows + PADDING;
-    ((WIDTH + SHADOW * 2.0) as u32, (panel + SHADOW * 2.0) as u32)
+    PADDING + INPUT_HEIGHT + SPACING + rows + PADDING
+}
+
+pub fn surface_size() -> (u32, u32) {
+    ((WIDTH + SIDE * 2.0) as u32, (panel_height() + SHADOW * 2.0) as u32)
 }
 
 pub enum Request {
@@ -94,6 +110,12 @@ pub struct Launcher {
     selection_moved: bool,
     /// Up in the input walks past queries. Where we are, if we're doing that.
     recall: Option<usize>,
+    /// The row the pointer moved onto: the card shows it rather than the
+    /// selected one, until the keyboard moves the selection. A pointer that
+    /// just sits where the window opens doesn't count.
+    pointed: Option<usize>,
+    /// Where the card was last frame, so moving onto it keeps it.
+    card: Option<Rect>,
     pub runner: Runner,
     pub history: History,
 }
@@ -118,6 +140,8 @@ impl Launcher {
             enter_waiting: false,
             selection_moved: false,
             recall: None,
+            pointed: None,
+            card: None,
             runner,
             history,
         }
@@ -140,6 +164,7 @@ impl Launcher {
 
     fn query_changed(&mut self) {
         self.confirming = None;
+        self.pointed = None;
         self.query = self.input.clone();
         let started = self.runner.run(&self.query);
         self.generation = started.generation;
@@ -173,6 +198,7 @@ impl Launcher {
     }
 
     fn publish(&mut self, items: Vec<Item>) {
+        self.pointed = None;
         let selected = self.items.get(self.selected).filter(|_| self.selection_moved && !self.stale).map(|i| (i.plugin, i.id.clone()));
         if self.stale {
             self.items.clear();
@@ -203,6 +229,7 @@ impl Launcher {
 
     fn select(&mut self, index: usize) {
         self.selected = index;
+        self.pointed = None;
         self.selection_moved = true;
         self.action = 0;
         self.scroll_to_selected = true;
@@ -405,9 +432,9 @@ impl Launcher {
         range.is_empty() && range.primary == CCursor::new(self.input.chars().count())
     }
 
-    /// Draws a frame. Returns what to do, and where the panel is: everything
-    /// around it, the shadow included, lets clicks through.
-    pub fn draw(&mut self, ui: &mut egui::Ui, icons: &mut Icons) -> (Vec<Request>, Rect) {
+    /// Draws a frame. Returns what to do, and where the panel and the card
+    /// are: everything around them, the shadows included, lets clicks through.
+    pub fn draw(&mut self, ui: &mut egui::Ui, icons: &mut Icons, previews: &mut Previews) -> (Vec<Request>, Vec<Rect>) {
         let ctx = ui.ctx().clone();
         let mut requests = Vec::new();
         self.keys(&ctx, &mut requests);
@@ -422,10 +449,12 @@ impl Launcher {
             .stroke(Stroke::new(1.0, BORDER))
             .corner_radius(CornerRadius::same(18))
             .inner_margin(PADDING)
-            .outer_margin(egui::Margin { left: SHADOW as i8, right: SHADOW as i8, top: SHADOW as i8, bottom: 0 })
             .shadow(egui::Shadow { offset: [0, 8], blur: 60, spread: 0, color: Color32::from_black_alpha(130) });
 
-        let panel = frame.show(ui, |ui| {
+        let mut hovered_row = None;
+        let room = Rect::from_min_size(egui::pos2(SIDE, SHADOW), Vec2::new(WIDTH, panel_height()));
+        let mut panel_ui = ui.new_child(egui::UiBuilder::new().max_rect(room));
+        let panel = frame.show(&mut panel_ui, |ui| {
             ui.set_width(WIDTH - PADDING * 2.0 - 2.0);
             ui.spacing_mut().item_spacing = Vec2::new(0.0, SPACING);
             if self.confirming.is_some() {
@@ -437,11 +466,69 @@ impl Launcher {
                 if self.actions_open {
                     self.draw_actions(ui, &mut requests);
                 } else {
-                    self.draw_rows(ui, icons, alt, &mut requests);
+                    hovered_row = self.draw_rows(ui, icons, previews, alt, &mut requests);
                 }
             }
         });
-        (requests, panel.response.rect)
+        let panel = panel.response.rect;
+        let mut rects = vec![panel];
+        if self.confirming.is_some() || self.actions_open || self.items.is_empty() {
+            self.pointed = None;
+            self.card = None;
+            return (requests, rects);
+        }
+        // Moving off the rows and the card gives the card back to the selection.
+        if ctx.input(|i| i.pointer.delta() != Vec2::ZERO) {
+            let on_card = ctx.pointer_hover_pos().zip(self.card).is_some_and(|(at, card)| card.contains(at));
+            if hovered_row.is_some() || !on_card {
+                self.pointed = hovered_row;
+            }
+        }
+        self.card = self.draw_card(ui, panel, icons, previews, &mut requests);
+        rects.extend(self.card);
+        (requests, rects)
+    }
+
+    /// The pointed or selected file, large, beside the list. Its icon while
+    /// the preview comes, or when it can't have one.
+    fn draw_card(&mut self, ui: &mut egui::Ui, panel: Rect, icons: &mut Icons, previews: &mut Previews, requests: &mut Vec<Request>) -> Option<Rect> {
+        let index = self.pointed.filter(|i| *i < self.items.len()).unwrap_or(self.selected);
+        let item = self.items.get(index)?;
+        let preview = item.preview.as_ref()?;
+        let rect = Rect::from_min_size(egui::pos2(panel.right() + CARD_GAP, panel.top()), Vec2::new(CARD_WIDTH, panel_height()));
+        let corner = CornerRadius::same(18);
+        let shadow = egui::Shadow { offset: [0, 6], blur: 30, spread: 0, color: Color32::from_black_alpha(110) };
+        ui.painter().add(shadow.as_shape(rect, corner));
+        ui.painter().rect(rect, corner, WINDOW, Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+
+        let side = CARD_WIDTH - PADDING * 2.0;
+        let well = Rect::from_min_size(rect.min + Vec2::splat(PADDING), Vec2::splat(side));
+        ui.painter().rect_filled(well, CornerRadius::same(11), INPUT);
+        let ppp = ui.ctx().pixels_per_point();
+        let picture = well.shrink(ROW_PADDING);
+        if let Some(shown) = previews.get(ui.ctx(), preview, picture.width() * ppp) {
+            let at = previews::fit(picture, shown.size, ppp);
+            egui::Image::from_texture(egui::load::SizedTexture::new(shown.texture, at.size())).corner_radius(4).paint_at(ui, at);
+        } else if let Some(texture) = icons.get(&item.icon) {
+            let at = Rect::from_center_size(well.center(), Vec2::splat(ICON * 2.0));
+            ui.painter().image(texture, at, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+        }
+
+        let width = side - ROW_PADDING;
+        let left = well.left() + ROW_PADDING / 2.0;
+        let title = galley(ui, &item.title, TITLE_FONT, TEXT, width);
+        let subtitle = galley(ui, &item.subtitle, SUBTITLE_FONT, SUBTEXT, width);
+        let total = title.size().y + subtitle.size().y;
+        let top = (well.bottom() + rect.bottom() - total) / 2.0;
+        let below = top + title.size().y;
+        ui.painter().galley(egui::pos2(left, top), title, TEXT);
+        ui.painter().galley(egui::pos2(left, below), subtitle, SUBTEXT);
+
+        if ui.interact(rect, ui.scope_id().with("card"), Sense::click()).clicked() {
+            self.select(index);
+            self.activate(0, requests);
+        }
+        Some(rect)
     }
 
     fn draw_input(&mut self, ui: &mut egui::Ui) {
@@ -478,10 +565,13 @@ impl Launcher {
         }
     }
 
-    fn draw_rows(&mut self, ui: &mut egui::Ui, icons: &mut Icons, alt: bool, requests: &mut Vec<Request>) {
+    /// Returns the row under the pointer.
+    fn draw_rows(&mut self, ui: &mut egui::Ui, icons: &mut Icons, previews: &mut Previews, alt: bool, requests: &mut Vec<Request>) -> Option<usize> {
         let height = VISIBLE_ROWS as f32 * ROW_HEIGHT + (VISIBLE_ROWS - 1) as f32 * ROW_SPACING;
         let scroll_to = std::mem::take(&mut self.scroll_to_selected);
         let mut clicked = None;
+        let mut hovered = None;
+        let ppp = ui.ctx().pixels_per_point();
         egui::ScrollArea::vertical()
             .max_height(height)
             .auto_shrink([false, true])
@@ -502,8 +592,15 @@ impl Launcher {
                     } else if response.hovered() {
                         ui.painter().rect_filled(rect, CornerRadius::same(11), Color32::from_white_alpha(10));
                     }
+                    if response.hovered() {
+                        hovered = Some(index);
+                    }
                     let icon_rect = Rect::from_min_size(rect.min + Vec2::splat(ROW_PADDING), Vec2::splat(ICON));
-                    if let Some(texture) = icons.get(&item.icon) {
+                    let shown = item.preview.as_ref().and_then(|p| previews.get(ui.ctx(), p, ICON * ppp));
+                    if let Some(shown) = shown {
+                        let at = previews::fit(icon_rect, shown.size, ppp);
+                        egui::Image::from_texture(egui::load::SizedTexture::new(shown.texture, at.size())).corner_radius(3).paint_at(ui, at);
+                    } else if let Some(texture) = icons.get(&item.icon) {
                         let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                         ui.painter().image(texture, icon_rect, uv, Color32::WHITE);
                     }
@@ -534,6 +631,7 @@ impl Launcher {
             let actions = self.items[index].actions.len();
             self.activate(if alt { second_action(actions) } else { 0 }, requests);
         }
+        hovered
     }
 
     fn draw_actions(&mut self, ui: &mut egui::Ui, requests: &mut Vec<Request>) {
