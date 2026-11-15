@@ -452,7 +452,12 @@ impl Launcher {
             .id_salt("input")
             .font(FontId::proportional(INPUT_FONT))
             .text_color(TEXT)
-            .hint_text(egui::RichText::new("Search, or / for commands").color(SUBTEXT))
+            // egui lays the hint out in the theme's body font, not `font`, and
+            // puts the cursor at the hint's top left: at body size both sat
+            // high and small. Sized like the text, the hint, the cursor and
+            // what's typed line up.
+            .hint_text(egui::RichText::new("Search, or / for commands").size(INPUT_FONT).color(SUBTEXT))
+            .align(egui::Align2::LEFT_CENTER)
             .frame(egui::Frame::NONE)
             .desired_width(inner.width())
             .margin(Vec2::ZERO)
