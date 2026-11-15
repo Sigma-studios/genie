@@ -8,11 +8,13 @@
 //! / or ~ is a real path and is listed from the filesystem. Tab on a folder
 //! completes it with a slash, to go one level down.
 //!
-//! The regular search also lists files, after apps: a few for a plain name of
-//! three letters or more, and all of them for a path, which is plainly what's
-//! wanted. Tab there stays in the regular search.
+//! The regular search also lists files, after apps. For a plain name of three
+//! letters or more, the first four come before the web search and the rest
+//! after it; for a path, which is plainly what's wanted, all of them come
+//! before. Tab there stays in the regular search.
 
 use crate::config;
+use crate::plugin::AFTER_WEB;
 use crate::plugin::Action;
 use crate::plugin::Command;
 use crate::plugin::Effect;
@@ -33,7 +35,9 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-const LIMIT: usize = 40;
+/// The list says how many more there are and grows when asked, so a broad
+/// query like `.png` gets plenty to go through.
+const LIMIT: usize = 200;
 /// Folders followed per path segment. Only exact names are followed, so this
 /// only bites on common names (`src/`, `target/`).
 const ANCHORS: usize = 20;
@@ -42,8 +46,8 @@ const LISTING: usize = 5000;
 /// Fewer letters than this match too much to be worth listing in the regular
 /// search.
 const REGULAR_MINIMUM: usize = 3;
-/// Few enough there that Google, after them, stays within reach. `/files` has
-/// them all.
+/// Few enough there that the web search, after them, stays within reach. The
+/// rest come after it.
 const REGULAR_LIMIT: usize = 4;
 /// Below apps.
 const TIER: u8 = 1;
@@ -312,6 +316,15 @@ fn preview(path: &str) -> Option<Preview> {
     Some(Preview { path: path.into(), mtime: metadata.mtime(), size: metadata.len() })
 }
 
+/// A plain name in the regular search: a few files above the web search, and
+/// the rest below it.
+fn regular_items(hits: Vec<Hit>) -> Vec<Item> {
+    hits.into_iter()
+        .enumerate()
+        .map(|(i, hit)| make_item(hit, "", "", i).tier(if i < REGULAR_LIMIT { TIER } else { AFTER_WEB }))
+        .collect()
+}
+
 /// `command` is what Tab keeps in front of the path, like `/files `.
 fn make_item(hit: Hit, command: &str, typed: &str, position: usize) -> Item {
     let dir = hit.kind == "dir";
@@ -358,8 +371,7 @@ impl Plugin for Files {
             }
             // Nothing to say if the daemon's down: this wasn't asked for.
             if let Ok(hits) = search(text) {
-                let items = hits.into_iter().take(REGULAR_LIMIT).enumerate();
-                query.send(items.map(|(i, h)| make_item(h, "", "", i).tier(TIER)).collect());
+                query.send(regular_items(hits));
             }
             return;
         }
@@ -436,6 +448,15 @@ mod tests {
         assert_eq!(preview(dir.to_str().unwrap()), None);
         assert_eq!(preview("/no/such/file"), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_few_files_come_before_the_web_and_the_rest_after() {
+        let hit = |i: usize| Hit { path: format!("/x/{i}.png"), kind: "file".into(), bytes: None, rank: Rank::Substring };
+        let items = regular_items((0..7).map(hit).collect());
+        let tiers: Vec<u8> = items.iter().map(|i| i.tier).collect();
+        assert_eq!(tiers, [TIER, TIER, TIER, TIER, AFTER_WEB, AFTER_WEB, AFTER_WEB]);
+        assert!(items[3].score > items[4].score, "the daemon's order stays");
     }
 
     #[test]

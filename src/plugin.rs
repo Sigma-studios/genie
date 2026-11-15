@@ -231,6 +231,9 @@ pub trait Plugin: Send + Sync {
 /// Items of this tier wait for every plugin to finish: the web search answers at
 /// once and files take a moment, and it shouldn't be selected in between.
 pub const LAST_TIER: u8 = 2;
+/// After the web search: the files past the first few in the regular search,
+/// so the web stays within reach and Down goes on through the rest.
+pub const AFTER_WEB: u8 = LAST_TIER + 1;
 
 pub struct Started {
     pub generation: u64,
