@@ -43,7 +43,7 @@ const INPUT_HEIGHT: f32 = 32.0 + INPUT_PADDING * 2.0;
 const VISIBLE_ROWS: usize = 5;
 /// Going down past the fifth row grows the list to this many, rather than
 /// scrolling; past these, it scrolls.
-const EXPANDED_ROWS: usize = 8;
+const EXPANDED_ROWS: usize = 12;
 /// The line under the list saying how many more there are.
 const MORE_HEIGHT: f32 = 22.0;
 const ICON: f32 = 39.0;
@@ -72,7 +72,7 @@ fn panel_height() -> f32 {
 }
 
 /// The panel grows downwards, so the surface has room for it at its
-/// tallest: eight rows and the line under them.
+/// tallest: twelve rows and the line under them.
 pub fn surface_size() -> (u32, u32) {
     let tallest = PADDING + INPUT_HEIGHT + SPACING + rows_height(EXPANDED_ROWS) + SPACING + MORE_HEIGHT + PADDING;
     ((WIDTH + SIDE * 2.0) as u32, (tallest + SHADOW * 2.0) as u32)
@@ -127,8 +127,10 @@ pub struct Launcher {
     pointed: Option<usize>,
     /// Where the card was last frame, so moving onto it keeps it.
     card: Option<Rect>,
-    /// Eight rows rather than five, until the query changes.
+    /// Twelve rows rather than five, until the query changes.
     expanded: bool,
+    /// How many are below the last row in sight.
+    more: usize,
     pub runner: Runner,
     pub history: History,
 }
@@ -156,6 +158,7 @@ impl Launcher {
             pointed: None,
             card: None,
             expanded: false,
+            more: 0,
             runner,
             history,
         }
@@ -611,14 +614,16 @@ impl Launcher {
                 for (index, item) in self.items.iter().enumerate() {
                     let selected = index == self.selected;
                     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
+                    // Before skipping what's out of sight: that's where the
+                    // keyboard takes the selection.
+                    if selected && scroll_to {
+                        ui.scroll_to_rect(rect, None);
+                    }
                     if !ui.is_rect_visible(rect) {
                         continue;
                     }
                     if selected {
                         ui.painter().rect_filled(rect, CornerRadius::same(11), SELECTION);
-                        if scroll_to {
-                            ui.scroll_to_rect(rect, None);
-                        }
                     } else if response.hovered() {
                         ui.painter().rect_filled(rect, CornerRadius::same(11), Color32::from_white_alpha(10));
                     }
@@ -660,6 +665,7 @@ impl Launcher {
         let pitch = ROW_HEIGHT + ROW_SPACING;
         let seen = ((scrolled.state.clamped_offset().y + scrolled.inner_rect.height() + ROW_SPACING) / pitch + 0.01).floor() as usize;
         let more = self.items.len().saturating_sub(seen);
+        self.more = more;
         if more > 0 && self.draw_more(ui, more) {
             self.expanded = true;
         }
@@ -671,7 +677,7 @@ impl Launcher {
         hovered
     }
 
-    /// "12 more", under the list. Clicking it shows eight rows.
+    /// "12 more", under the list. Clicking it shows twelve rows.
     fn draw_more(&self, ui: &mut egui::Ui, more: usize) -> bool {
         let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), MORE_HEIGHT), Sense::click());
         let color = if response.hovered() && !self.expanded { TEXT } else { SUBTEXT };
@@ -849,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn going_down_past_five_shows_eight_until_the_query_changes() {
+    fn going_down_past_five_shows_twelve_until_the_query_changes() {
         let mut launcher = launcher();
         launcher.set_input("a".into());
         let generation = launcher.generation;
@@ -860,9 +866,40 @@ mod tests {
         assert!(launcher.expanded);
         assert_eq!(launcher.visible_rows(), EXPANDED_ROWS);
         launcher.step(-5);
-        assert!(launcher.expanded, "going back up keeps eight");
+        assert!(launcher.expanded, "going back up keeps twelve");
         launcher.set_input("ab".into());
         assert!(!launcher.expanded);
+    }
+
+    #[test]
+    fn the_list_scrolls_to_follow_the_keyboard() {
+        let mut launcher = launcher();
+        launcher.set_input("a".into());
+        let generation = launcher.generation;
+        launcher.results(generation, (0..30).map(|i| item(&i.to_string(), 0)).collect());
+        let (events, _) = std::sync::mpsc::channel();
+        let mut icons = Icons::new(events.clone(), crate::icons::Window::Launcher);
+        let mut previews = Previews::new(events);
+        let ctx = egui::Context::default();
+        let (width, height) = surface_size();
+        let mut frame = |launcher: &mut Launcher, time: f64| {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(width as f32, height as f32))),
+                time: Some(time),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(raw, |ui| {
+                launcher.draw(ui, &mut icons, &mut previews);
+            });
+            output.textures_delta.clear();
+        };
+        frame(&mut launcher, 0.0);
+        assert_eq!(launcher.more, 25, "five in sight");
+        launcher.step(20);
+        for time in 1..10 {
+            frame(&mut launcher, time as f64);
+        }
+        assert_eq!(launcher.more, 9, "twelve in sight, down to the selected 21st");
     }
 
     #[test]
