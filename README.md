@@ -23,7 +23,8 @@ what's in there, and Tab goes one level down. Everything else is a command:
 
 Enter or a click runs a result, and an app that's open comes forward rather than starting
 again. Alt+Enter or Alt+click runs its second action: New window, for an app. Alt+Down lists
-them all. Tab, or Right at the end of the input, completes: `/a` Right gives `/amazon `. Up on the first result walks back through past queries. Escape or
+them all. Tab, or Right at the end of the input, completes: `/a` Right gives `/amazon `. Up on the first result walks back through past queries. Five results show, with how many more under them: going down past the fifth shows
+eight, and past those the list scrolls. Escape or
 clicking elsewhere hides.
 
 Files show their preview as their icon, and the selected one, or the one under the

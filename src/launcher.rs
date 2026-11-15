@@ -41,6 +41,11 @@ const INPUT_FONT: f32 = 19.0 * 4.0 / 3.0;
 const INPUT_PADDING: f32 = 5.0;
 const INPUT_HEIGHT: f32 = 32.0 + INPUT_PADDING * 2.0;
 const VISIBLE_ROWS: usize = 5;
+/// Going down past the fifth row grows the list to this many, rather than
+/// scrolling; past these, it scrolls.
+const EXPANDED_ROWS: usize = 8;
+/// The line under the list saying how many more there are.
+const MORE_HEIGHT: f32 = 22.0;
 const ICON: f32 = 39.0;
 const ROW_PADDING: f32 = 6.0;
 const ROW_HEIGHT: f32 = ICON + ROW_PADDING * 2.0;
@@ -57,14 +62,20 @@ pub const SELECTION: Color32 = Color32::from_rgb(0x1f, 0x4e, 0x68);
 pub const TEXT: Color32 = Color32::from_rgb(0xfc, 0xfc, 0xfc);
 pub const SUBTEXT: Color32 = Color32::from_rgb(0xa1, 0xa9, 0xb1);
 
-/// The panel at its tallest, with every row showing.
-fn panel_height() -> f32 {
-    let rows = VISIBLE_ROWS as f32 * ROW_HEIGHT + (VISIBLE_ROWS - 1) as f32 * ROW_SPACING;
-    PADDING + INPUT_HEIGHT + SPACING + rows + PADDING
+fn rows_height(rows: usize) -> f32 {
+    rows as f32 * ROW_HEIGHT + rows.saturating_sub(1) as f32 * ROW_SPACING
 }
 
+/// The panel with five rows, which the card matches.
+fn panel_height() -> f32 {
+    PADDING + INPUT_HEIGHT + SPACING + rows_height(VISIBLE_ROWS) + PADDING
+}
+
+/// The panel grows downwards, so the surface has room for it at its
+/// tallest: eight rows and the line under them.
 pub fn surface_size() -> (u32, u32) {
-    ((WIDTH + SIDE * 2.0) as u32, (panel_height() + SHADOW * 2.0) as u32)
+    let tallest = PADDING + INPUT_HEIGHT + SPACING + rows_height(EXPANDED_ROWS) + SPACING + MORE_HEIGHT + PADDING;
+    ((WIDTH + SIDE * 2.0) as u32, (tallest + SHADOW * 2.0) as u32)
 }
 
 pub enum Request {
@@ -116,6 +127,8 @@ pub struct Launcher {
     pointed: Option<usize>,
     /// Where the card was last frame, so moving onto it keeps it.
     card: Option<Rect>,
+    /// Eight rows rather than five, until the query changes.
+    expanded: bool,
     pub runner: Runner,
     pub history: History,
 }
@@ -142,6 +155,7 @@ impl Launcher {
             recall: None,
             pointed: None,
             card: None,
+            expanded: false,
             runner,
             history,
         }
@@ -165,6 +179,7 @@ impl Launcher {
     fn query_changed(&mut self) {
         self.confirming = None;
         self.pointed = None;
+        self.expanded = false;
         self.query = self.input.clone();
         let started = self.runner.run(&self.query);
         self.generation = started.generation;
@@ -240,7 +255,13 @@ impl Launcher {
             return;
         }
         let last = self.items.len() as isize - 1;
-        self.select((self.selected as isize + delta).clamp(0, last) as usize);
+        let index = (self.selected as isize + delta).clamp(0, last) as usize;
+        self.expanded |= index >= VISIBLE_ROWS;
+        self.select(index);
+    }
+
+    fn visible_rows(&self) -> usize {
+        if self.expanded { EXPANDED_ROWS } else { VISIBLE_ROWS }
     }
 
     /// One step further back or forward through past queries.
@@ -403,10 +424,10 @@ impl Launcher {
             }
         }
         if pressed(Modifiers::NONE, Key::PageDown) {
-            self.step(VISIBLE_ROWS as isize);
+            self.step(self.visible_rows() as isize);
         }
         if pressed(Modifiers::NONE, Key::PageUp) {
-            self.step(-(VISIBLE_ROWS as isize));
+            self.step(-(self.visible_rows() as isize));
         }
         let completion = self.items.get(self.selected).and_then(|i| i.completion.clone());
         if let Some(completion) = completion.clone()
@@ -452,7 +473,7 @@ impl Launcher {
             .shadow(egui::Shadow { offset: [0, 8], blur: 60, spread: 0, color: Color32::from_black_alpha(130) });
 
         let mut hovered_row = None;
-        let room = Rect::from_min_size(egui::pos2(SIDE, SHADOW), Vec2::new(WIDTH, panel_height()));
+        let room = Rect::from_min_size(egui::pos2(SIDE, SHADOW), ui.available_size() - Vec2::new(SIDE * 2.0, SHADOW));
         let mut panel_ui = ui.new_child(egui::UiBuilder::new().max_rect(room));
         let panel = frame.show(&mut panel_ui, |ui| {
             ui.set_width(WIDTH - PADDING * 2.0 - 2.0);
@@ -567,12 +588,12 @@ impl Launcher {
 
     /// Returns the row under the pointer.
     fn draw_rows(&mut self, ui: &mut egui::Ui, icons: &mut Icons, previews: &mut Previews, alt: bool, requests: &mut Vec<Request>) -> Option<usize> {
-        let height = VISIBLE_ROWS as f32 * ROW_HEIGHT + (VISIBLE_ROWS - 1) as f32 * ROW_SPACING;
+        let height = rows_height(self.visible_rows());
         let scroll_to = std::mem::take(&mut self.scroll_to_selected);
         let mut clicked = None;
         let mut hovered = None;
         let ppp = ui.ctx().pixels_per_point();
-        egui::ScrollArea::vertical()
+        let scrolled = egui::ScrollArea::vertical()
             .max_height(height)
             .auto_shrink([false, true])
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -626,12 +647,28 @@ impl Launcher {
                     }
                 }
             });
+        // What's below the last row in sight.
+        let pitch = ROW_HEIGHT + ROW_SPACING;
+        let seen = ((scrolled.state.clamped_offset().y + scrolled.inner_rect.height() + ROW_SPACING) / pitch + 0.01).floor() as usize;
+        let more = self.items.len().saturating_sub(seen);
+        if more > 0 && self.draw_more(ui, more) {
+            self.expanded = true;
+        }
         if let Some(index) = clicked {
             self.select(index);
             let actions = self.items[index].actions.len();
             self.activate(if alt { second_action(actions) } else { 0 }, requests);
         }
         hovered
+    }
+
+    /// "12 more", under the list. Clicking it shows eight rows.
+    fn draw_more(&self, ui: &mut egui::Ui, more: usize) -> bool {
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), MORE_HEIGHT), Sense::click());
+        let color = if response.hovered() && !self.expanded { TEXT } else { SUBTEXT };
+        let text = galley(ui, &format!("{more} more"), SUBTITLE_FONT, color, rect.width() - ROW_PADDING * 2.0);
+        ui.painter().galley(egui::pos2(rect.left() + ROW_PADDING, rect.center().y - text.size().y / 2.0), text, color);
+        response.clicked() && !self.expanded
     }
 
     fn draw_actions(&mut self, ui: &mut egui::Ui, requests: &mut Vec<Request>) {
@@ -788,6 +825,23 @@ mod tests {
         assert_eq!(second_action(0), 0);
         assert_eq!(second_action(1), 0);
         assert_eq!(second_action(3), 1);
+    }
+
+    #[test]
+    fn going_down_past_five_shows_eight_until_the_query_changes() {
+        let mut launcher = launcher();
+        launcher.set_input("a".into());
+        let generation = launcher.generation;
+        launcher.results(generation, (0..12).map(|i| item(&i.to_string(), 0)).collect());
+        launcher.step(4);
+        assert!(!launcher.expanded, "the fifth row is in sight");
+        launcher.step(1);
+        assert!(launcher.expanded);
+        assert_eq!(launcher.visible_rows(), EXPANDED_ROWS);
+        launcher.step(-5);
+        assert!(launcher.expanded, "going back up keeps eight");
+        launcher.set_input("ab".into());
+        assert!(!launcher.expanded);
     }
 
     #[test]
