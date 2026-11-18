@@ -371,7 +371,6 @@ fn list_command() -> Command {
 }
 
 fn open_list(item: &mut Item) {
-    item.completion = None;
     item.actions = vec![Action::new("open", "Open", Effect::OpenCommandList)];
 }
 
@@ -401,8 +400,8 @@ fn list_commands<'a>(commands: impl Iterator<Item = &'a Command>, typed: &str) -
             .completion(format!("/{} ", command.name))
             .score(score + order);
             item.plugin = "commands";
+            // Enter runs it; Tab and Right still complete the name, like any other.
             if let Some(action) = &command.action {
-                item.completion = None;
                 item.actions = vec![action.clone()];
             }
             Some(item)
@@ -446,5 +445,14 @@ mod tests {
         assert_eq!(titles("music"), ["/spotify"]);
         assert!(titles("zzz").is_empty());
         assert_eq!(list_commands(commands.iter(), "ma")[0].completion.as_deref(), Some("/maps "));
+    }
+
+    #[test]
+    fn commands_that_run_directly_still_complete() {
+        let action = Action::new("run", "Lock", Effect::Copy(String::new()));
+        let commands = [Command::new("lock", &[], "Lock the screen", "lock").action(action)];
+        let item = &list_commands(commands.iter(), "lo")[0];
+        assert_eq!(item.completion.as_deref(), Some("/lock "));
+        assert_eq!(item.actions.len(), 1);
     }
 }
